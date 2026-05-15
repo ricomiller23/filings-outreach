@@ -131,44 +131,24 @@ export async function runDailyWorkflow(opts: {
   const matches = filingsScanned > 0 ? await matchFilingsToSeeds(filings) : [];
   matchedTargets = matches.length;
 
-  // ─── Stage 3–5: Generate, Dedupe, Send ───────────────────────────────────
-  // Group matches by contact to combine same-day multi-filing into one email
-  const contactMap = new Map<string, (typeof matches)[0][]>();
-  for (const m of matches) {
-    const key = m.seed.email;
-    if (!contactMap.has(key)) contactMap.set(key, []);
-    contactMap.get(key)!.push(m);
-  }
+  for (const match of matches) {
+    const generated = generateEmail(match);
 
-  for (const [_email, contactMatches] of contactMap) {
-    // Use the highest-score filing if multiple match same contact
-    const best = contactMatches.sort((a, b) => b.filing.score - a.filing.score)[0];
-    const generated = generateEmail(best);
-
-    const filingDate = new Date(best.filing.filedAt).toISOString().split("T")[0];
+    const filingDate = new Date(match.filing.filedAt).toISOString().split("T")[0];
 
     // Duplicate check
     const dup = await isDuplicate({
       email: generated.to,
-      issuerName: best.filing.issuerName,
+      issuerName: match.filing.issuerName,
       filingDate,
     });
     if (dup) {
-      console.log(`[workflow] ⏭ Skipping duplicate: ${generated.to} / ${best.filing.issuerName}`);
+      console.log(`[workflow] ⏭ Skipping duplicate: ${generated.to} / ${match.filing.issuerName}`);
       suppressedDupes++;
       continue;
     }
 
-    // 30-day suppression check
-    const suppressed = await isSuppressed({
-      email: generated.to,
-      issuerName: best.filing.issuerName,
-    });
-    if (suppressed) {
-      console.log(`[workflow] ⏭ Suppressed (30-day window): ${generated.to} / ${best.filing.issuerName}`);
-      suppressedDupes++;
-      continue;
-    }
+
 
     if (dryRun) {
       console.log(`\n[DRY RUN] Would send to: ${generated.to}`);
@@ -187,12 +167,12 @@ export async function runDailyWorkflow(opts: {
 
     if (sendResult.success) {
       emailsSent++;
-      await createOutreachRecord(generated, sendResult, best.seedId);
+      await createOutreachRecord(generated, sendResult, match.seedId);
       sentEmailDetails!.push({
         to: generated.to,
-        company: best.seed.target_company,
+        company: match.seed.target_company,
         subject: generated.subject,
-        issuer: best.filing.issuerName,
+        issuer: match.filing.issuerName,
       });
     } else {
       errors.push(`Send failed to ${generated.to}: ${sendResult.error}`);
