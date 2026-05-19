@@ -90,10 +90,10 @@ export default function DashboardPage() {
       setLoading(true);
       try {
         const [crmRes, watchRes, logRes, gmailRes] = await Promise.all([
-          fetch("/api/crm?limit=100").then((r) => r.json()),
-          fetch("/api/watchlist").then((r) => r.json()),
-          fetch("/api/run-log?limit=20").then((r) => r.json()),
-          fetch("/api/gmail-status").then((r) => r.json()),
+          fetch("/api/crm?limit=100", { cache: "no-store" }).then((r) => r.json()),
+          fetch("/api/watchlist", { cache: "no-store" }).then((r) => r.json()),
+          fetch("/api/run-log?limit=20", { cache: "no-store" }).then((r) => r.json()),
+          fetch("/api/gmail-status", { cache: "no-store" }).then((r) => r.json()),
         ]);
         setCrm(crmRes.data ?? []);
         setWatchlist(watchRes.data ?? []);
@@ -112,7 +112,7 @@ export default function DashboardPage() {
     setTriggering(true);
     setTriggerResult(null);
     try {
-      const res = await fetch("/api/cron/daily-run?dry=1");
+      const res = await fetch("/api/manual-run?dry=1", { method: "POST", cache: "no-store" });
       const data = await res.json();
       setTriggerResult(JSON.stringify(data, null, 2));
     } catch (e) {
@@ -127,7 +127,7 @@ export default function DashboardPage() {
     setTriggering(true);
     setTriggerResult(null);
     try {
-      const res = await fetch("/api/cron/daily-run");
+      const res = await fetch("/api/manual-run", { method: "POST", cache: "no-store" });
       const data = await res.json();
       setTriggerResult(JSON.stringify(data, null, 2));
     } catch (e) {
