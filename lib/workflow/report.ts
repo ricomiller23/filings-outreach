@@ -3,7 +3,7 @@
 import { sendEmail } from "../gmail/sender";
 import { query } from "../db";
 
-const OWNER_EMAIL = process.env.OWNER_EMAIL ?? "ricomiller@icloud.com";
+const OWNER_EMAIL = process.env.OWNER_EMAIL ?? "ricomiller@gmail.com";
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL ?? "https://filings-outreach.vercel.app";
 
 export interface RunSummary {
@@ -68,7 +68,7 @@ LINKS
 
 ${"─".repeat(50)}
 Rico Miller
-ricomiller@icloud.com
+ricomiller@gmail.com
 `;
 
   try {
