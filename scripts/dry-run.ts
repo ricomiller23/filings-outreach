@@ -19,7 +19,7 @@ async function main() {
   // Stage 1: Ingest
   const lastRunAt = await getLastRunAt();
   console.log(`[1] Last successful run: ${lastRunAt?.toISOString() ?? "never (using 48h lookback)"}`);
-  const filings = await ingestFilings(lastRunAt);
+  const filings = await ingestFilings({ lastRunAt });
   console.log(`[1] Ingested ${filings.length} filings\n`);
 
   if (filings.length === 0) {

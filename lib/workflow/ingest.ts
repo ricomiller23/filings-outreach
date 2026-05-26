@@ -39,18 +39,28 @@ async function fetchWithRetry(url: string, attempt = 1): Promise<Response> {
  * Fetch filings from the edgar-insider-scout API.
  * Returns all filings from the last 24 hours (or since lastRunAt if provided).
  */
-export async function ingestFilings(lastRunAt?: Date): Promise<FilingRecord[]> {
-  console.log("[ingest] Fetching filings from API...");
+export async function ingestFilings(opts: {
+  lastRunAt?: Date;
+  limit?: number;
+  lookbackDays?: number;
+} = {}): Promise<FilingRecord[]> {
+  const { lastRunAt, limit = 100, lookbackDays } = opts;
+  console.log(`[ingest] Fetching filings from API (limit=${limit})...`);
 
-  // Fetch up to 100 recent filings
-  const url = `${FILINGS_API}?limit=100`;
+  // Fetch up to limit recent filings
+  const url = `${FILINGS_API}?limit=${limit}`;
   const res = await fetchWithRetry(url);
   const json = await res.json();
 
   const raw: Record<string, unknown>[] = json.data ?? [];
 
-  // Filter to filings newer than lastRunAt (or last 48 hours as fallback)
-  const cutoff = lastRunAt ?? new Date(Date.now() - 48 * 60 * 60 * 1000);
+  // Determine cutoff
+  let cutoff: Date;
+  if (lookbackDays !== undefined) {
+    cutoff = new Date(Date.now() - lookbackDays * 24 * 60 * 60 * 1000);
+  } else {
+    cutoff = lastRunAt ?? new Date(Date.now() - 48 * 60 * 60 * 1000);
+  }
 
   const filings: FilingRecord[] = raw
     .filter((f) => {
@@ -72,7 +82,7 @@ export async function ingestFilings(lastRunAt?: Date): Promise<FilingRecord[]> {
       has3a10: Boolean(f.has3a10),
     }));
 
-  console.log(`[ingest] Found ${filings.length} new filings since ${cutoff.toISOString()}`);
+  console.log(`[ingest] Found ${filings.length} filings since ${cutoff.toISOString()}`);
   return filings;
 }
 

@@ -2,6 +2,7 @@
 // Runs all 7 stages in order. Used by the Vercel cron API route.
 
 import { ingestFilings } from "./ingest";
+import { query, queryOne } from "../db";
 import { matchFilingsToSeeds } from "./match";
 import { generateEmail } from "./generate";
 import {
@@ -115,20 +116,62 @@ export async function runDailyWorkflow(opts: {
     resetRunCounter();
   }
 
-  // ─── Stage 1: File Ingestion ──────────────────────────────────────────────
+  // ─── Stage 1 & 2: Ingestion & Target Matching with Dynamic Lookback ────────
   const lastRunAt = await getLastRunAt();
-  let filings: import("./ingest").FilingRecord[] = [];
-  try {
-    filings = await ingestFilings(lastRunAt);
-    filingsScanned = filings.length;
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    errors.push(`Ingest failed: ${msg}`);
-    console.error("[workflow] ❌ Ingest error:", msg);
+  let matches: import("./match").MatchedOutreach[] = [];
+  filingsScanned = 0;
+  
+  // Try dynamic lookback windows to find at least 20 unsent matches:
+  const lookbackTiers = [
+    { name: "normal", lookbackDays: undefined, limit: 100 },
+    { name: "30-day", lookbackDays: 30, limit: 500 },
+    { name: "90-day", lookbackDays: 90, limit: 1000 },
+    { name: "360-day", lookbackDays: 360, limit: 1000 },
+  ];
+
+  for (const tier of lookbackTiers) {
+    console.log(`[workflow] Ingestion tier: ${tier.name} (limit=${tier.limit})`);
+    try {
+      const filings = await ingestFilings({
+        lastRunAt: tier.lookbackDays ? undefined : lastRunAt,
+        limit: tier.limit,
+        lookbackDays: tier.lookbackDays,
+      });
+      filingsScanned = Math.max(filingsScanned, filings.length);
+      
+      await ensureSeedsForFilings(filings);
+      
+      const potentialMatches = await matchFilingsToSeeds(filings);
+      
+      // Filter to only those that are not duplicates in outreach_crm
+      const unsentMatches: import("./match").MatchedOutreach[] = [];
+      for (const m of potentialMatches) {
+        const generated = generateEmail(m);
+        const filingDate = new Date(m.filing.filedAt).toISOString().split("T")[0];
+        const dup = await isDuplicate({
+          email: generated.to,
+          issuerName: m.filing.issuerName,
+          filingDate,
+        });
+        if (!dup) {
+          unsentMatches.push(m);
+        }
+      }
+
+      console.log(`[workflow] Tier ${tier.name}: Found ${potentialMatches.length} matches, of which ${unsentMatches.length} are unsent.`);
+      
+      // If we found at least 20 unsent matches, or we are on the final tier, select these matches.
+      if (unsentMatches.length >= 20 || tier.name === "360-day") {
+        matches = potentialMatches;
+        break;
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      errors.push(`Ingest failed on tier ${tier.name}: ${msg}`);
+      console.error(`[workflow] ❌ Ingest error on tier ${tier.name}:`, msg);
+    }
   }
 
-  // ─── Stage 2: Target Matching ─────────────────────────────────────────────
-  const matches = filingsScanned > 0 ? await matchFilingsToSeeds(filings) : [];
   matchedTargets = matches.length;
 
   for (const match of matches) {
@@ -236,4 +279,68 @@ export async function runDailyWorkflow(opts: {
     errors,
     dryRun,
   };
+}
+
+function generatePlaceholderEmail(companyName: string, ticker: string | null): string {
+  if (ticker && ticker.trim().length > 0) {
+    return `ir@${ticker.trim().toLowerCase()}.com`;
+  }
+  const cleanName = companyName
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "")
+    .replace(/(inc|corp|co|ltd|holdings|plc)$/g, "");
+  return `ir@${cleanName || "company"}.com`;
+}
+
+async function ensureSeedsForFilings(filings: import("./ingest").FilingRecord[]) {
+  // 1. Get all filings that meet the target criteria
+  const targetFilings = filings.filter(f => f.score >= 50 || f.hasRestricted || f.hasAgedDebt);
+  if (targetFilings.length === 0) return;
+
+  const uniqueCiks = Array.from(new Set(targetFilings.map(f => f.issuerCik)));
+
+  // 2. Fetch existing seeds for these CIKs
+  const existingSeeds = await query<{ issuer_cik: string }>(
+    `SELECT issuer_cik FROM outreach_seed_watchlist WHERE issuer_cik = ANY($1)`,
+    [uniqueCiks]
+  );
+  const existingCiks = new Set(existingSeeds.map(s => s.issuer_cik));
+
+  // 3. For any CIK not in existing seeds, insert a new seed!
+  for (const filing of targetFilings) {
+    if (existingCiks.has(filing.issuerCik)) continue;
+
+    console.log(`[workflow] 🆕 Dynamically creating seed for new company: ${filing.issuerName} (${filing.issuerCik})`);
+    
+    // Generate placeholder email and get phone
+    const email = generatePlaceholderEmail(filing.issuerName, filing.ticker);
+    
+    // We can fetch the phone number of the issuer from the database!
+    const issuerRow = await queryOne<{ phone: string | null }>(
+      `SELECT phone FROM "public"."Issuer" WHERE cik = $1`,
+      [filing.issuerCik]
+    );
+    const phone = issuerRow?.phone || "unknown";
+
+    await query(
+      `INSERT INTO outreach_seed_watchlist 
+        (target_company, target_context, contact_person, title, email, phone,
+         likely_paper, best_angle, live_enabled, issuer_cik, notes, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true, $9, 'Dynamically created by system', now())
+       ON CONFLICT (target_company, email) DO NOTHING`,
+      [
+        filing.issuerName,
+        "Form 144 / Insider transaction seller",
+        "Investor Relations",
+        "Investor Relations",
+        email,
+        phone === "unknown" ? null : phone,
+        filing.hasRestricted ? "Rule 144 restricted stock / block position" : "OTC company paper",
+        "Inquiry regarding potential block sale or capital structure optimization",
+        filing.issuerCik
+      ]
+    );
+
+    existingCiks.add(filing.issuerCik);
+  }
 }

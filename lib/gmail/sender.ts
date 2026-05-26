@@ -6,7 +6,7 @@ import { getOAuth2Client, checkSendAsAlias } from "./auth";
 const SEND_AS_EMAIL = process.env.SEND_AS_EMAIL ?? "ricomiller@icloud.com";
 const BCC_EMAIL = process.env.BCC_EMAIL ?? "ricomiller@icloud.com";
 const GMAIL_LABEL = process.env.GMAIL_LABEL ?? "AntiGravity/Filings-Outreach";
-const MAX_EMAILS_PER_RUN = 10;
+const MAX_EMAILS_PER_RUN = 30;
 const MIN_DELAY_MS = 60 * 1000; // 60 seconds between sends
 
 let emailsSentThisRun = 0;
