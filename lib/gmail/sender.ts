@@ -7,7 +7,7 @@ const SEND_AS_EMAIL = process.env.SEND_AS_EMAIL ?? "ricomiller@icloud.com";
 const BCC_EMAIL = process.env.BCC_EMAIL ?? "ricomiller@icloud.com";
 const GMAIL_LABEL = process.env.GMAIL_LABEL ?? "AntiGravity/Filings-Outreach";
 const MAX_EMAILS_PER_RUN = 30;
-const MIN_DELAY_MS = 60 * 1000; // 60 seconds between sends
+const MIN_DELAY_MS = 2 * 1000; // 2 seconds between sends to fit within Vercel timeout limits
 
 let emailsSentThisRun = 0;
 let lastSentAt = 0;
