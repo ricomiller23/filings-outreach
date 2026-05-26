@@ -18,20 +18,23 @@ async function main() {
   const client = await pool.connect();
 
   try {
-    console.log("=== FAILED RUN DETAILS ===");
+    console.log("=== LATEST RUN LOGS ===");
     const runs = await client.query(`
-      SELECT run_id, run_at, auth_errors, send_errors, status 
+      SELECT run_id, run_at, filings_scanned, matched_targets, emails_sent, suppressed_dupes, status 
       FROM outreach_run_log 
-      WHERE status = 'failed' 
       ORDER BY run_at DESC 
-      LIMIT 5
+      LIMIT 10
     `);
-    
-    for (const r of runs.rows) {
-      console.log(`\nRun ID: ${r.run_id} at ${r.run_at}`);
-      console.log(`Auth Errors: ${r.auth_errors}`);
-      console.log(`Send Errors: ${r.send_errors}`);
-    }
+    console.table(runs.rows);
+
+    console.log("\n=== LATEST OUTREACHES SENT ===");
+    const outreaches = await client.query(`
+      SELECT outreach_id, target_company, email, filing_date, sent_at, delivery_status 
+      FROM outreach_crm 
+      ORDER BY sent_at DESC 
+      LIMIT 20
+    `);
+    console.table(outreaches.rows);
 
   } finally {
     client.release();

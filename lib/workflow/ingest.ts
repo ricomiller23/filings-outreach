@@ -13,6 +13,9 @@ export interface FilingRecord {
   hasAgedDebt: boolean;
   hasRestricted: boolean;
   has3a10: boolean;
+  insiderName: string | null;
+  insiderCik: string | null;
+  insiderPhone: string | null;
 }
 
 const FILINGS_API = process.env.FILINGS_API_URL ?? "https://edgar-insider-scout.vercel.app/api/filings";
@@ -80,6 +83,9 @@ export async function ingestFilings(opts: {
       hasAgedDebt: Boolean(f.hasAgedDebt),
       hasRestricted: Boolean(f.hasRestricted),
       has3a10: Boolean(f.has3a10),
+      insiderName: ((f.Insider as Record<string, unknown>)?.fullName as string) ?? null,
+      insiderCik: ((f.Insider as Record<string, unknown>)?.cik as string) ?? null,
+      insiderPhone: ((f.Insider as Record<string, unknown>)?.phone as string) ?? null,
     }));
 
   console.log(`[ingest] Found ${filings.length} filings since ${cutoff.toISOString()}`);

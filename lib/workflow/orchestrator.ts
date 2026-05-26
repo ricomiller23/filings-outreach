@@ -3,7 +3,7 @@
 
 import { ingestFilings } from "./ingest";
 import { query, queryOne } from "../db";
-import { matchFilingsToSeeds } from "./match";
+import { matchFilingsToSeeds, isRealPersonName } from "./match";
 import { generateEmail } from "./generate";
 import {
   isDuplicate,
@@ -310,7 +310,17 @@ async function ensureSeedsForFilings(filings: import("./ingest").FilingRecord[])
   for (const filing of targetFilings) {
     if (existingCiks.has(filing.issuerCik)) continue;
 
-    console.log(`[workflow] 🆕 Dynamically creating seed for new company: ${filing.issuerName} (${filing.issuerCik})`);
+    // Determine the best contact person from the filing data
+    // Only use insiderName if it's a real person, not a company/entity
+    const insiderIsRealPerson = isRealPersonName(filing.insiderName, filing.issuerName);
+    const contactPerson = insiderIsRealPerson
+      ? filing.insiderName!.trim()
+      : "Investor Relations";
+    const contactTitle = contactPerson !== "Investor Relations"
+      ? "Filing Contact / Insider"
+      : "Investor Relations";
+
+    console.log(`[workflow] 🆕 Dynamically creating seed for: ${filing.issuerName} (${filing.issuerCik}) — contact: ${contactPerson}`);
     
     // Generate placeholder email and get phone
     const email = generatePlaceholderEmail(filing.issuerName, filing.ticker);
@@ -320,7 +330,8 @@ async function ensureSeedsForFilings(filings: import("./ingest").FilingRecord[])
       `SELECT phone FROM "public"."Issuer" WHERE cik = $1`,
       [filing.issuerCik]
     );
-    const phone = issuerRow?.phone || "unknown";
+    // Prefer filing insider phone > issuer DB phone > unknown
+    const phone = filing.insiderPhone?.trim() || issuerRow?.phone || "unknown";
 
     await query(
       `INSERT INTO outreach_seed_watchlist 
@@ -331,8 +342,8 @@ async function ensureSeedsForFilings(filings: import("./ingest").FilingRecord[])
       [
         filing.issuerName,
         "Form 144 / Insider transaction seller",
-        "Investor Relations",
-        "Investor Relations",
+        contactPerson,
+        contactTitle,
         email,
         phone === "unknown" ? null : phone,
         filing.hasRestricted ? "Rule 144 restricted stock / block position" : "OTC company paper",

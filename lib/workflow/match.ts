@@ -75,6 +75,28 @@ export async function matchFilingsToSeeds(
         notes: dbSeed.notes || staticSeed?.notes || undefined,
       };
 
+      // ── Insider personalization ──────────────────────────────────
+      // If the filing has a real insider name from the SEC document,
+      // override the generic "Investor Relations" placeholder so emails
+      // are addressed to an actual person.
+      // Guard: only use insiderName if it's a real person, not a company.
+      const insiderIsRealPerson = isRealPersonName(filing.insiderName, filing.issuerName);
+      if (insiderIsRealPerson) {
+        const isGenericPerson =
+          seedConfig.contact_person === "Investor Relations" ||
+          seedConfig.contact_person.toLowerCase().includes("ir desk");
+        if (isGenericPerson) {
+          seedConfig.contact_person = filing.insiderName!.trim();
+          seedConfig.title = "Filing Contact / Insider";
+          console.log(`[match] 🎯 Personalized contact: "${seedConfig.contact_person}" (was generic)`);
+        }
+      }
+      if (filing.insiderPhone && filing.insiderPhone.trim().length > 0) {
+        if (seedConfig.phone === "unknown" || !seedConfig.phone) {
+          seedConfig.phone = filing.insiderPhone.trim();
+        }
+      }
+
       const key = `${filing.id}::${dbSeed.seed_id}`;
       if (seen.has(key)) continue;
 
@@ -113,4 +135,31 @@ export async function matchFilingsToSeeds(
 
   console.log(`[match] ${matches.length} target matches found across ${filings.length} filings`);
   return matches;
+}
+
+/**
+ * Determine if an insider name is a real person vs. a company/entity name.
+ * Returns true only if the name looks like a human being.
+ */
+export function isRealPersonName(insiderName: string | null, issuerName: string): boolean {
+  if (!insiderName || insiderName.trim().length === 0) return false;
+  const name = insiderName.trim();
+
+  // If the insider name matches the issuer/company name, it's not a person
+  if (name.toLowerCase() === issuerName.toLowerCase()) return false;
+
+  // Check for corporate suffixes that indicate an entity
+  const entityPatterns = [
+    /\b(inc|corp|co|ltd|llc|lp|plc|holdings|group|trust|fund|capital|partners|ventures|gmbh|s\.a\.|n\.v\.|ag)\b/i,
+    /\b(bank|association|foundation|committee|council)\b/i,
+  ];
+  for (const pat of entityPatterns) {
+    if (pat.test(name)) return false;
+  }
+
+  // A person's name should have at least 2 tokens (first + last)
+  const tokens = name.split(/\s+/).filter(t => t.length > 0);
+  if (tokens.length < 2) return false;
+
+  return true;
 }
