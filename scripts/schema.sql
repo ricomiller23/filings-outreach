@@ -84,3 +84,51 @@ CREATE INDEX IF NOT EXISTS outreach_crm_reply_idx
 -- Index for suppression window (30-day)
 CREATE INDEX IF NOT EXISTS outreach_crm_sent_at_idx
   ON outreach_crm (email, sent_at);
+
+-- ─── Research Queue ────────────────────────────────────────────────────────────
+-- Holds companies discovered via filing scans that need a real contact
+-- email researched before outreach can begin. The workflow NEVER sends to
+-- guessed/placeholder addresses — it logs here instead.
+CREATE TABLE IF NOT EXISTS outreach_research_queue (
+  queue_id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  issuer_cik           TEXT NOT NULL UNIQUE,   -- one row per company
+  issuer_name          TEXT NOT NULL,
+  ticker               TEXT,
+  form_type            TEXT,
+  filing_date          DATE,
+  likely_contact_person TEXT,                  -- insider name if available
+  likely_paper         TEXT,
+  filing_url           TEXT,
+  notes                TEXT,
+  status               TEXT DEFAULT 'needs_research',  -- needs_research | researched | skip
+  resolved_seed_id     UUID REFERENCES outreach_seed_watchlist(seed_id),
+  created_at           TIMESTAMPTZ DEFAULT now(),
+  last_seen_at         TIMESTAMPTZ DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS outreach_research_queue_status_idx
+  ON outreach_research_queue (status)
+  WHERE status = 'needs_research';
+
+-- ─── WhaleWisdom Integration ───────────────────────
+-- Alter existing tables to support WhaleWisdom Stock IDs
+ALTER TABLE outreach_seed_watchlist
+  ADD COLUMN IF NOT EXISTS whalewisdom_stock_id INT;
+
+ALTER TABLE outreach_research_queue
+  ADD COLUMN IF NOT EXISTS whalewisdom_stock_id INT;
+
+-- Table to cache institutional holders for companies
+CREATE TABLE IF NOT EXISTS outreach_company_holders (
+  holder_id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  issuer_cik            TEXT NOT NULL,
+  holder_name           TEXT NOT NULL,
+  shares                BIGINT,
+  percent_ownership     NUMERIC(5,2),
+  change_shares         BIGINT,
+  updated_at            TIMESTAMPTZ DEFAULT now(),
+  UNIQUE (issuer_cik, holder_name)
+);
+
+CREATE INDEX IF NOT EXISTS outreach_company_holders_cik_idx
+  ON outreach_company_holders (issuer_cik);

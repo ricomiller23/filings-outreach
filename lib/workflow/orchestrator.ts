@@ -281,16 +281,14 @@ export async function runDailyWorkflow(opts: {
   };
 }
 
-function generatePlaceholderEmail(companyName: string, ticker: string | null): string {
-  if (ticker && ticker.trim().length > 0) {
-    return `ir@${ticker.trim().toLowerCase()}.com`;
-  }
-  const cleanName = companyName
-    .toLowerCase()
-    .replace(/[^a-z0-9]/g, "")
-    .replace(/(inc|corp|co|ltd|holdings|plc)$/g, "");
-  return `ir@${cleanName || "company"}.com`;
-}
+// ─── IMPORTANT: No placeholder / guessed emails ────────────────────────────
+// Seeds MUST have a real, researched email address for a named individual.
+// We NEVER fabricate ir@ticker.com or ir@companyname.com addresses —
+// those domains often don't exist and cause bounce-backs.
+// New companies discovered via filings are logged to outreach_research_queue
+// for manual research. Only after a real contact email is found should a seed
+// be added to outreach_seed_watchlist with live_enabled = true.
+// ────────────────────────────────────────────────────────────────────────────
 
 async function ensureSeedsForFilings(filings: import("./ingest").FilingRecord[]) {
   // 1. Get all filings that meet the target criteria
@@ -299,58 +297,64 @@ async function ensureSeedsForFilings(filings: import("./ingest").FilingRecord[])
 
   const uniqueCiks = Array.from(new Set(targetFilings.map(f => f.issuerCik)));
 
-  // 2. Fetch existing seeds for these CIKs
-  const existingSeeds = await query<{ issuer_cik: string }>(
-    `SELECT issuer_cik FROM outreach_seed_watchlist WHERE issuer_cik = ANY($1)`,
-    [uniqueCiks]
-  );
-  const existingCiks = new Set(existingSeeds.map(s => s.issuer_cik));
+  // 2. Fetch existing seeds AND existing research-queue entries for these CIKs
+  const [existingSeeds, existingQueue] = await Promise.all([
+    query<{ issuer_cik: string }>(
+      `SELECT issuer_cik FROM outreach_seed_watchlist WHERE issuer_cik = ANY($1)`,
+      [uniqueCiks]
+    ),
+    query<{ issuer_cik: string }>(
+      `SELECT issuer_cik FROM outreach_research_queue WHERE issuer_cik = ANY($1)`,
+      [uniqueCiks]
+    ).catch(() => [] as { issuer_cik: string }[]), // table may not exist yet; non-fatal
+  ]);
 
-  // 3. For any CIK not in existing seeds, insert a new seed!
+  const existingCiks = new Set([
+    ...existingSeeds.map(s => s.issuer_cik),
+    ...existingQueue.map(s => s.issuer_cik),
+  ]);
+
+  // 3. For any CIK not already known, add to research queue — NEVER create a
+  //    seed with a guessed/fabricated email address.
   for (const filing of targetFilings) {
     if (existingCiks.has(filing.issuerCik)) continue;
 
-    // Determine the best contact person from the filing data
-    // Only use insiderName if it's a real person, not a company/entity
     const insiderIsRealPerson = isRealPersonName(filing.insiderName, filing.issuerName);
     const contactPerson = insiderIsRealPerson
       ? filing.insiderName!.trim()
-      : "Investor Relations";
-    const contactTitle = contactPerson !== "Investor Relations"
-      ? "Filing Contact / Insider"
-      : "Investor Relations";
+      : null; // unknown until researched
 
-    console.log(`[workflow] 🆕 Dynamically creating seed for: ${filing.issuerName} (${filing.issuerCik}) — contact: ${contactPerson}`);
-    
-    // Generate placeholder email and get phone
-    const email = generatePlaceholderEmail(filing.issuerName, filing.ticker);
-    
-    // We can fetch the phone number of the issuer from the database!
-    const issuerRow = await queryOne<{ phone: string | null }>(
-      `SELECT phone FROM "public"."Issuer" WHERE cik = $1`,
-      [filing.issuerCik]
+    console.log(
+      `[workflow] 🔎 New company needs research before outreach: ${filing.issuerName} (CIK: ${filing.issuerCik})` +
+      (contactPerson ? ` — likely contact: ${contactPerson}` : "")
     );
-    // Prefer filing insider phone > issuer DB phone > unknown
-    const phone = filing.insiderPhone?.trim() || issuerRow?.phone || "unknown";
 
+    // Log to research queue so the dashboard can surface it for manual follow-up.
+    // live_enabled stays false until a real email is confirmed.
     await query(
-      `INSERT INTO outreach_seed_watchlist 
-        (target_company, target_context, contact_person, title, email, phone,
-         likely_paper, best_angle, live_enabled, issuer_cik, notes, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true, $9, 'Dynamically created by system', now())
-       ON CONFLICT (target_company, email) DO NOTHING`,
+      `INSERT INTO outreach_research_queue
+         (issuer_cik, issuer_name, ticker, form_type, filing_date,
+          likely_contact_person, likely_paper, filing_url, notes, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now())
+       ON CONFLICT (issuer_cik) DO UPDATE SET
+         last_seen_at = now(),
+         filing_date = EXCLUDED.filing_date,
+         form_type = EXCLUDED.form_type`,
       [
+        filing.issuerCik,
         filing.issuerName,
-        "Form 144 / Insider transaction seller",
+        filing.ticker ?? null,
+        filing.formType,
+        new Date(filing.filedAt).toISOString().split("T")[0],
         contactPerson,
-        contactTitle,
-        email,
-        phone === "unknown" ? null : phone,
         filing.hasRestricted ? "Rule 144 restricted stock / block position" : "OTC company paper",
-        "Inquiry regarding potential block sale or capital structure optimization",
-        filing.issuerCik
+        filing.filingUrl ?? null,
+        "Auto-detected via filing scan. Needs real contact email before outreach.",
       ]
-    );
+    ).catch((err: Error) => {
+      // If the outreach_research_queue table doesn't exist yet, just warn — don't crash.
+      console.warn(`[workflow] Could not log to research queue (table may need migration): ${err.message}`);
+    });
 
     existingCiks.add(filing.issuerCik);
   }

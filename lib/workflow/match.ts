@@ -1,8 +1,7 @@
-// lib/workflow/match.ts — Stage 2: Target Matching
-
 import { FilingRecord } from "./ingest";
 import { SeedContact, LIVE_SEEDS } from "../seeds";
 import { query } from "../db";
+import { isGenericEmail } from "../email-validator";
 
 export interface MatchedOutreach {
   filing: FilingRecord;
@@ -24,7 +23,7 @@ export async function matchFilingsToSeeds(
   }
 
   // Load live seeds from DB (source of truth after seed-db.ts runs)
-  const dbSeeds = await query<{
+  const rawDbSeeds = await query<{
     seed_id: string;
     target_company: string;
     target_context: string | null;
@@ -44,6 +43,9 @@ export async function matchFilingsToSeeds(
             filing_link, contact_source_link, likely_paper, best_angle, live_enabled, issuer_cik, notes
      FROM outreach_seed_watchlist WHERE live_enabled = true AND email IS NOT NULL`
   );
+
+  const dbSeeds = rawDbSeeds.filter(s => !isGenericEmail(s.email));
+
 
   const matches: MatchedOutreach[] = [];
   const seen = new Set<string>(); // dedupe: filing.id + seed.seed_id

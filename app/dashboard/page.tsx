@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { isGenericEmail } from "@/lib/email-validator";
 
 // Types
 interface CRMRecord {
@@ -29,6 +30,32 @@ interface WatchlistRecord {
   live_enabled: boolean;
   likely_paper: string;
   notes?: string;
+  whalewisdom_stock_id?: number | null;
+  issuer_cik?: string | null;
+}
+
+interface WhaleWisdomHolder {
+  holder_name: string;
+  shares: number;
+  percent_ownership: number;
+  change_shares: number;
+}
+
+interface ResearchRecord {
+  queue_id: string;
+  issuer_cik: string;
+  issuer_name: string;
+  ticker: string | null;
+  form_type: string;
+  filing_date: string;
+  likely_contact_person: string | null;
+  likely_paper: string | null;
+  filing_url: string | null;
+  notes: string | null;
+  status: string;
+  created_at: string;
+  last_seen_at: string;
+  whalewisdom_stock_id?: number | null;
 }
 
 interface RunLog {
@@ -81,16 +108,22 @@ function formatDate(d?: string) {
 export default function DashboardPage() {
   const [crm, setCrm] = useState<CRMRecord[]>([]);
   const [watchlist, setWatchlist] = useState<WatchlistRecord[]>([]);
+  const [researchQueue, setResearchQueue] = useState<ResearchRecord[]>([]);
   const [runLog, setRunLog] = useState<RunLog[]>([]);
   const [gmailStatus, setGmailStatus] = useState<GmailStatus | null>(null);
   
-  const [activeTab, setActiveTab] = useState<"crm" | "watchlist" | "log">("crm");
+  const [activeTab, setActiveTab] = useState<"crm" | "watchlist" | "research" | "log">("crm");
   const [loading, setLoading] = useState(true);
   const [errorState, setErrorState] = useState<string | null>(null);
   const [triggering, setTriggering] = useState(false);
   const [triggerResult, setTriggerResult] = useState<string | null>(null);
   const [isDryRun, setIsDryRun] = useState(true);
   const [expandedLog, setExpandedLog] = useState<string | null>(null);
+
+  // WhaleWisdom & Promotion State
+  const [holdersMap, setHoldersMap] = useState<Record<string, { loading: boolean; error?: string; warning?: string; list: WhaleWisdomHolder[] }>>({});
+  const [promotionForms, setPromotionForms] = useState<Record<string, { contact_person: string; email: string; phone: string; likely_paper: string; best_angle: string; notes: string }>>({});
+  const [submittingResearch, setSubmittingResearch] = useState<Record<string, boolean>>({});
 
   // CRM State
   const [crmPage, setCrmPage] = useState(1);
@@ -103,19 +136,37 @@ export default function DashboardPage() {
     setLoading(true);
     setErrorState(null);
     try {
-      const [crmRes, watchRes, logRes, gmailRes] = await Promise.all([
+      const [crmRes, watchRes, logRes, gmailRes, researchRes] = await Promise.all([
         fetch("/api/crm?limit=100", { cache: "no-store" }),
         fetch("/api/watchlist", { cache: "no-store" }),
         fetch("/api/run-log?limit=20", { cache: "no-store" }),
         fetch("/api/gmail-status", { cache: "no-store" }),
+        fetch("/api/research", { cache: "no-store" }),
       ]);
-      if (!crmRes.ok || !watchRes.ok || !logRes.ok || !gmailRes.ok) {
+      if (!crmRes.ok || !watchRes.ok || !logRes.ok || !gmailRes.ok || !researchRes.ok) {
         throw new Error("Failed to load one or more resources.");
       }
       setCrm((await crmRes.json()).data ?? []);
       setWatchlist((await watchRes.json()).data ?? []);
       setRunLog((await logRes.json()).data ?? []);
       setGmailStatus(await gmailRes.json());
+      
+      const queueData: ResearchRecord[] = (await researchRes.json()).data ?? [];
+      setResearchQueue(queueData);
+
+      // Initialize promotion forms
+      const forms: Record<string, any> = {};
+      for (const item of queueData) {
+        forms[item.queue_id] = {
+          contact_person: item.likely_contact_person || "",
+          email: "",
+          phone: "",
+          likely_paper: item.likely_paper || "Rule 144 restricted stock / block position",
+          best_angle: "Inquiry regarding potential block sale or capital structure optimization",
+          notes: "",
+        };
+      }
+      setPromotionForms(forms);
     } catch (e) {
       console.error(e);
       setErrorState(String(e));
@@ -127,6 +178,97 @@ export default function DashboardPage() {
   useEffect(() => {
     loadData();
   }, []);
+
+  const fetchHoldersForCik = async (cik: string, ticker?: string | null) => {
+    setHoldersMap((prev) => ({
+      ...prev,
+      [cik]: { loading: true, list: [] },
+    }));
+
+    try {
+      const res = await fetch(`/api/whalewisdom/holders?cik=${cik}&ticker=${ticker || ""}`, { cache: "no-store" });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || "Failed to fetch holders");
+
+      setHoldersMap((prev) => ({
+        ...prev,
+        [cik]: {
+          loading: false,
+          warning: json.api_warning,
+          list: json.data || [],
+        },
+      }));
+    } catch (err: any) {
+      setHoldersMap((prev) => ({
+        ...prev,
+        [cik]: {
+          loading: false,
+          error: err.message,
+          list: [],
+        },
+      }));
+    }
+  };
+
+  const updatePromotionForm = (queueId: string, field: string, value: string) => {
+    setPromotionForms((prev) => ({
+      ...prev,
+      [queueId]: {
+        ...prev[queueId],
+        [field]: value,
+      },
+    }));
+  };
+
+  const promoteToWatchlist = async (item: ResearchRecord) => {
+    const form = promotionForms[item.queue_id];
+    if (!form || !form.email) {
+      alert("Please enter a contact email address.");
+      return;
+    }
+
+    if (isGenericEmail(form.email)) {
+      alert("Emails to generic/role-based addresses (like ir@, info@, contact@) are not allowed. Please enter a direct email address for a named contact.");
+      return;
+    }
+
+    setSubmittingResearch((prev) => ({ ...prev, [item.queue_id]: true }));
+    try {
+      const res = await fetch("/api/research", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          queue_id: item.queue_id,
+          target_company: item.issuer_name,
+          contact_person: form.contact_person,
+          email: form.email,
+          phone: form.phone,
+          likely_paper: form.likely_paper,
+          best_angle: form.best_angle,
+          notes: form.notes || "Promoted via Research Queue Dashboard",
+          issuer_cik: item.issuer_cik,
+          whalewisdom_stock_id: item.whalewisdom_stock_id,
+        }),
+      });
+
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || "Failed to promote to watchlist");
+
+      // Success! Remove from research queue
+      setResearchQueue((prev) => prev.filter((r) => r.queue_id !== item.queue_id));
+      
+      // Reload seeds list in background
+      const watchRes = await fetch("/api/watchlist", { cache: "no-store" });
+      if (watchRes.ok) {
+        setWatchlist((await watchRes.json()).data ?? []);
+      }
+      alert(`Successfully promoted ${item.issuer_name} to Seed Watchlist!`);
+    } catch (err: any) {
+      alert(`Promotion failed: ${err.message}`);
+    } finally {
+      setSubmittingResearch((prev) => ({ ...prev, [item.queue_id]: false }));
+    }
+  };
 
   async function triggerManualRun() {
     if (!isDryRun && !confirm("Send LIVE outreach emails now?")) return;
@@ -236,7 +378,7 @@ export default function DashboardPage() {
       <div className="border-b border-zinc-800 bg-[#0d0d14] sticky top-0 z-10">
         <div className="max-w-7xl mx-auto px-8 flex items-center justify-between">
           <div className="flex gap-6">
-            {(["crm", "watchlist", "log"] as const).map((tab) => (
+            {(["crm", "watchlist", "research", "log"] as const).map((tab) => (
               <button
                 key={tab}
                 onClick={() => setActiveTab(tab)}
@@ -246,7 +388,13 @@ export default function DashboardPage() {
                     : "border-transparent text-zinc-500 hover:text-zinc-300 hover:border-zinc-700"
                 }`}
               >
-                {tab === "crm" ? `Outreach CRM (${totalSent})` : tab === "watchlist" ? `Seed Watchlist (${watchlist.length})` : `Run Log (${runLog.length})`}
+                {tab === "crm"
+                  ? `Outreach CRM (${totalSent})`
+                  : tab === "watchlist"
+                  ? `Seed Watchlist (${watchlist.length})`
+                  : tab === "research"
+                  ? `Research Queue (${researchQueue.length})`
+                  : `Run Log (${runLog.length})`}
               </button>
             ))}
           </div>
@@ -459,7 +607,12 @@ export default function DashboardPage() {
                               {row.live_enabled ? "✓ LIVE" : "+ ADD TO LIVE"}
                             </button>
                           </td>
-                          <td className="px-5 py-3.5 font-medium text-zinc-200">{row.target_company}</td>
+                          <td className="px-5 py-3.5 font-medium text-zinc-200">
+                            {row.target_company}
+                            {row.issuer_cik && (
+                              <div className="text-[10px] text-zinc-500 mt-0.5">CIK: {row.issuer_cik}</div>
+                            )}
+                          </td>
                           <td className="px-5 py-3.5 text-zinc-400">{row.contact_person}</td>
                           <td className="px-5 py-3.5 text-zinc-500">{row.email || "—"}</td>
                           <td className="px-5 py-3.5 text-zinc-500 max-w-xs truncate">{row.likely_paper}</td>
@@ -469,6 +622,248 @@ export default function DashboardPage() {
                     )}
                   </tbody>
                 </table>
+              </div>
+            )}
+
+            {/* Research Queue Tab */}
+            {activeTab === "research" && (
+              <div className="space-y-6">
+                {researchQueue.length === 0 ? (
+                  <div className="text-center text-zinc-500 py-16 bg-[#0a0a0f] border border-zinc-800 rounded-xl shadow-xl">
+                    <div className="flex flex-col items-center gap-2">
+                      <span className="text-2xl">🎉</span>
+                      <span className="font-semibold text-zinc-400">All caught up!</span>
+                      <span className="text-xs text-zinc-600">No new companies discovered via filings require manual research.</span>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    {researchQueue.map((item) => {
+                      const holdersInfo = holdersMap[item.issuer_cik];
+                      const form = promotionForms[item.queue_id] || {
+                        contact_person: "",
+                        email: "",
+                        phone: "",
+                        likely_paper: "",
+                        best_angle: "",
+                        notes: ""
+                      };
+
+                      return (
+                        <div
+                          key={item.queue_id}
+                          className="bg-[#0c0c14] border border-zinc-800 rounded-xl shadow-lg p-6 space-y-6 transition-all hover:border-zinc-700/80"
+                        >
+                          {/* Item Header */}
+                          <div className="flex justify-between items-start border-b border-zinc-800/60 pb-4">
+                            <div>
+                              <h3 className="text-base font-bold text-white flex items-center gap-2">
+                                {item.issuer_name}
+                                {item.ticker && (
+                                  <span className="px-2 py-0.5 text-[10px] font-mono font-bold rounded bg-violet-950 text-violet-400 border border-violet-800">
+                                    {item.ticker}
+                                  </span>
+                                )}
+                              </h3>
+                              <div className="flex items-center gap-4 text-xs text-zinc-500 mt-1">
+                                <span>CIK: {item.issuer_cik}</span>
+                                <span>•</span>
+                                <span>Discovered: {formatDate(item.created_at)}</span>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-2 text-xs">
+                              {item.filing_url && (
+                                <a
+                                  href={item.filing_url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="px-3 py-1.5 rounded-lg bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-white hover:bg-zinc-800 transition-colors"
+                                >
+                                  View SEC {item.form_type} filing ↗
+                                </a>
+                              )}
+                              <button
+                                onClick={() => fetchHoldersForCik(item.issuer_cik, item.ticker)}
+                                disabled={holdersInfo?.loading}
+                                className="px-3 py-1.5 rounded-lg bg-violet-900/60 border border-violet-800/80 text-violet-200 hover:bg-violet-800 hover:text-white transition-colors disabled:opacity-50"
+                              >
+                                {holdersInfo?.loading
+                                  ? "Fetching..."
+                                  : holdersInfo?.list
+                                  ? "Refresh Holders ↻"
+                                  : "Show Institutional Holders 🐋"}
+                              </button>
+                            </div>
+                          </div>
+
+                          {/* Split layout: Holders on left (if loaded), Form on right */}
+                          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                            {/* WhaleWisdom Holders Section */}
+                            <div className="lg:col-span-5 space-y-3">
+                              <h4 className="text-xs font-bold text-zinc-400 uppercase tracking-wider flex items-center gap-2">
+                                📊 Institutional Ownership
+                              </h4>
+                              
+                              {!holdersInfo && (
+                                <div className="border border-zinc-800/80 bg-zinc-900/10 rounded-lg p-5 text-center text-zinc-600 text-xs">
+                                  Click "Show Institutional Holders" to load ownership data from WhaleWisdom.
+                                </div>
+                              )}
+
+                              {holdersInfo?.loading && (
+                                <div className="border border-zinc-800/80 bg-zinc-900/10 rounded-lg p-8 flex flex-col items-center justify-center space-y-2">
+                                  <div className="w-5 h-5 border-2 border-violet-500 border-t-transparent rounded-full animate-spin"></div>
+                                  <span className="text-[10px] text-zinc-600 uppercase tracking-widest animate-pulse">CONNECTING WHALEWISDOM...</span>
+                                </div>
+                              )}
+
+                              {holdersInfo?.error && (
+                                <div className="border border-rose-950/40 bg-rose-950/10 text-rose-400 rounded-lg p-4 text-xs font-medium border-rose-900/40">
+                                  Error: {holdersInfo.error}
+                                </div>
+                              )}
+
+                              {holdersInfo && !holdersInfo.loading && !holdersInfo.error && (
+                                <div className="space-y-2">
+                                  {holdersInfo.warning && (
+                                    <div className="bg-amber-950/20 border border-amber-900/40 text-amber-400 rounded-lg p-3 text-[10px] font-medium leading-relaxed">
+                                      ⚠️ {holdersInfo.warning}
+                                    </div>
+                                  )}
+                                  
+                                  <div className="overflow-hidden rounded-lg border border-zinc-800 bg-[#0a0a0f]">
+                                    <table className="w-full text-[10px]">
+                                      <thead>
+                                        <tr className="bg-zinc-900 border-b border-zinc-850 text-zinc-500">
+                                          <th className="px-3 py-2 text-left font-bold uppercase">Institution</th>
+                                          <th className="px-3 py-2 text-right font-bold uppercase">%</th>
+                                          <th className="px-3 py-2 text-right font-bold uppercase">Change</th>
+                                        </tr>
+                                      </thead>
+                                      <tbody>
+                                        {holdersInfo.list.length === 0 ? (
+                                          <tr>
+                                            <td colSpan={3} className="px-3 py-6 text-center text-zinc-600">
+                                              No holdings found in WhaleWisdom database.
+                                            </td>
+                                          </tr>
+                                        ) : (
+                                          holdersInfo.list.map((h, i) => (
+                                            <tr key={i} className="border-b border-zinc-800/40 hover:bg-zinc-900/50">
+                                              <td className="px-3 py-2 font-medium text-zinc-300 max-w-[140px] truncate">{h.holder_name}</td>
+                                              <td className="px-3 py-2 text-right text-zinc-200 font-mono font-semibold">{h.percent_ownership.toFixed(2)}%</td>
+                                              <td className={`px-3 py-2 text-right font-mono font-medium ${h.change_shares > 0 ? 'text-emerald-400' : h.change_shares < 0 ? 'text-rose-400' : 'text-zinc-500'}`}>
+                                                {h.change_shares > 0 ? `+${Math.round(h.change_shares/1000)}k` : h.change_shares < 0 ? `${Math.round(h.change_shares/1000)}k` : '—'}
+                                              </td>
+                                            </tr>
+                                          ))
+                                        )}
+                                      </tbody>
+                                    </table>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+
+                            {/* Lead Promotion Form */}
+                            <div className="lg:col-span-7 space-y-4">
+                              <h4 className="text-xs font-bold text-zinc-400 uppercase tracking-wider">
+                                ✍️ Contact Research & Watchlist Promotion
+                              </h4>
+
+                              <div className="grid grid-cols-2 gap-4 text-xs">
+                                <div>
+                                  <label className="block text-[10px] font-bold text-zinc-500 uppercase tracking-wider mb-1.5">Contact Name</label>
+                                  <input
+                                    type="text"
+                                    value={form.contact_person}
+                                    onChange={(e) => updatePromotionForm(item.queue_id, "contact_person", e.target.value)}
+                                    placeholder="e.g. John Doe"
+                                    className="w-full bg-zinc-900/50 border border-zinc-850 rounded-lg text-zinc-200 focus:ring-1 focus:ring-violet-500 focus:border-violet-500 outline-none px-3.5 py-2"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="block text-[10px] font-bold text-zinc-500 uppercase tracking-wider mb-1.5">Contact Email <span className="text-rose-500">*</span></label>
+                                  <input
+                                    type="email"
+                                    required
+                                    value={form.email}
+                                    onChange={(e) => updatePromotionForm(item.queue_id, "email", e.target.value)}
+                                    placeholder="e.g. john@company.com"
+                                    className="w-full bg-zinc-900/50 border border-zinc-850 rounded-lg text-zinc-200 focus:ring-1 focus:ring-violet-500 focus:border-violet-500 outline-none px-3.5 py-2 font-mono"
+                                  />
+                                </div>
+                              </div>
+
+                              <div className="grid grid-cols-2 gap-4 text-xs">
+                                <div>
+                                  <label className="block text-[10px] font-bold text-zinc-500 uppercase tracking-wider mb-1.5">Phone Number</label>
+                                  <input
+                                    type="text"
+                                    value={form.phone}
+                                    onChange={(e) => updatePromotionForm(item.queue_id, "phone", e.target.value)}
+                                    placeholder="e.g. 555-0199"
+                                    className="w-full bg-zinc-900/50 border border-zinc-850 rounded-lg text-zinc-200 focus:ring-1 focus:ring-violet-500 focus:border-violet-500 outline-none px-3.5 py-2"
+                                  />
+                                </div>
+                                <div>
+                                  <label className="block text-[10px] font-bold text-zinc-500 uppercase tracking-wider mb-1.5">Likely Paper</label>
+                                  <select
+                                    value={form.likely_paper}
+                                    onChange={(e) => updatePromotionForm(item.queue_id, "likely_paper", e.target.value)}
+                                    className="w-full bg-zinc-900/50 border border-zinc-850 rounded-lg text-zinc-200 focus:ring-1 focus:ring-violet-500 focus:border-violet-500 outline-none px-3.5 py-2"
+                                  >
+                                    <option value="Rule 144 restricted stock / block position">Rule 144 restricted stock / block position</option>
+                                    <option value="Convertible debt note / conversion stock">Convertible debt note / conversion stock</option>
+                                    <option value="Distressed debt / legacy creditor claims">Distressed debt / legacy creditor claims</option>
+                                    <option value="OTC company transferable paper">OTC company transferable paper</option>
+                                  </select>
+                                </div>
+                              </div>
+
+                              <div className="text-xs">
+                                <label className="block text-[10px] font-bold text-zinc-500 uppercase tracking-wider mb-1.5">Best Angle / Pitch Hook</label>
+                                <select
+                                  value={form.best_angle}
+                                  onChange={(e) => updatePromotionForm(item.queue_id, "best_angle", e.target.value)}
+                                  className="w-full bg-zinc-900/50 border border-zinc-850 rounded-lg text-zinc-200 focus:ring-1 focus:ring-violet-500 focus:border-violet-500 outline-none px-3.5 py-2"
+                                >
+                                  <option value="Inquiry regarding potential block sale or capital structure optimization">Inquiry regarding potential block sale or capital structure optimization</option>
+                                  <option value="direct monetization of convertible note exposure instead of selling out through the market">direct monetization of convertible note exposure instead of selling out through the market</option>
+                                  <option value="bilateral purchase of claims or post-reorg equity exposure">bilateral purchase of claims or post-reorg equity exposure</option>
+                                  <option value="ask if treasury or IR can route an inquiry involving transferable paper or liquidity">ask if treasury or IR can route an inquiry involving transferable paper or liquidity</option>
+                                </select>
+                              </div>
+
+                              <div className="text-xs">
+                                <label className="block text-[10px] font-bold text-zinc-500 uppercase tracking-wider mb-1.5">Internal Research Notes</label>
+                                <textarea
+                                  value={form.notes}
+                                  onChange={(e) => updatePromotionForm(item.queue_id, "notes", e.target.value)}
+                                  placeholder="Add notes about your source search, contact verification details, or target context..."
+                                  rows={2}
+                                  className="w-full bg-zinc-900/50 border border-zinc-850 rounded-lg text-zinc-200 focus:ring-1 focus:ring-violet-500 focus:border-violet-500 outline-none px-3.5 py-2 text-xs"
+                                />
+                              </div>
+
+                              <div className="flex justify-end pt-2">
+                                <button
+                                  onClick={() => promoteToWatchlist(item)}
+                                  disabled={submittingResearch[item.queue_id] || !form.email}
+                                  className="px-5 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-medium transition-all shadow-md shadow-emerald-950/15 disabled:opacity-40 disabled:cursor-not-allowed text-xs"
+                                >
+                                  {submittingResearch[item.queue_id]
+                                    ? "Promoting..."
+                                    : "✓ Promote to Seed Watchlist"}
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             )}
 
