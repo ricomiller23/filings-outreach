@@ -2,7 +2,8 @@
 // Runs all 7 stages in order. Used by the Vercel cron API route.
 
 import { ingestFilings } from "./ingest";
-import { matchFilingsToSeeds } from "./match";
+import { query, queryOne } from "../db";
+import { matchFilingsToSeeds, isRealPersonName } from "./match";
 import { generateEmail } from "./generate";
 import {
   isDuplicate,
@@ -115,20 +116,62 @@ export async function runDailyWorkflow(opts: {
     resetRunCounter();
   }
 
-  // ─── Stage 1: File Ingestion ──────────────────────────────────────────────
+  // ─── Stage 1 & 2: Ingestion & Target Matching with Dynamic Lookback ────────
   const lastRunAt = await getLastRunAt();
-  let filings: import("./ingest").FilingRecord[] = [];
-  try {
-    filings = await ingestFilings(lastRunAt);
-    filingsScanned = filings.length;
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    errors.push(`Ingest failed: ${msg}`);
-    console.error("[workflow] ❌ Ingest error:", msg);
+  let matches: import("./match").MatchedOutreach[] = [];
+  filingsScanned = 0;
+  
+  // Try dynamic lookback windows to find at least 20 unsent matches:
+  const lookbackTiers = [
+    { name: "normal", lookbackDays: undefined, limit: 100 },
+    { name: "30-day", lookbackDays: 30, limit: 500 },
+    { name: "90-day", lookbackDays: 90, limit: 1000 },
+    { name: "360-day", lookbackDays: 360, limit: 1000 },
+  ];
+
+  for (const tier of lookbackTiers) {
+    console.log(`[workflow] Ingestion tier: ${tier.name} (limit=${tier.limit})`);
+    try {
+      const filings = await ingestFilings({
+        lastRunAt: tier.lookbackDays ? undefined : lastRunAt,
+        limit: tier.limit,
+        lookbackDays: tier.lookbackDays,
+      });
+      filingsScanned = Math.max(filingsScanned, filings.length);
+      
+      await ensureSeedsForFilings(filings);
+      
+      const potentialMatches = await matchFilingsToSeeds(filings);
+      
+      // Filter to only those that are not duplicates in outreach_crm
+      const unsentMatches: import("./match").MatchedOutreach[] = [];
+      for (const m of potentialMatches) {
+        const generated = generateEmail(m);
+        const filingDate = new Date(m.filing.filedAt).toISOString().split("T")[0];
+        const dup = await isDuplicate({
+          email: generated.to,
+          issuerName: m.filing.issuerName,
+          filingDate,
+        });
+        if (!dup) {
+          unsentMatches.push(m);
+        }
+      }
+
+      console.log(`[workflow] Tier ${tier.name}: Found ${potentialMatches.length} matches, of which ${unsentMatches.length} are unsent.`);
+      
+      // If we found at least 20 unsent matches, or we are on the final tier, select these matches.
+      if (unsentMatches.length >= 20 || tier.name === "360-day") {
+        matches = potentialMatches;
+        break;
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      errors.push(`Ingest failed on tier ${tier.name}: ${msg}`);
+      console.error(`[workflow] ❌ Ingest error on tier ${tier.name}:`, msg);
+    }
   }
 
-  // ─── Stage 2: Target Matching ─────────────────────────────────────────────
-  const matches = filingsScanned > 0 ? await matchFilingsToSeeds(filings) : [];
   matchedTargets = matches.length;
 
   for (const match of matches) {
@@ -236,4 +279,83 @@ export async function runDailyWorkflow(opts: {
     errors,
     dryRun,
   };
+}
+
+// ─── IMPORTANT: No placeholder / guessed emails ────────────────────────────
+// Seeds MUST have a real, researched email address for a named individual.
+// We NEVER fabricate ir@ticker.com or ir@companyname.com addresses —
+// those domains often don't exist and cause bounce-backs.
+// New companies discovered via filings are logged to outreach_research_queue
+// for manual research. Only after a real contact email is found should a seed
+// be added to outreach_seed_watchlist with live_enabled = true.
+// ────────────────────────────────────────────────────────────────────────────
+
+async function ensureSeedsForFilings(filings: import("./ingest").FilingRecord[]) {
+  // 1. Get all filings that meet the target criteria
+  const targetFilings = filings.filter(f => f.score >= 50 || f.hasRestricted || f.hasAgedDebt);
+  if (targetFilings.length === 0) return;
+
+  const uniqueCiks = Array.from(new Set(targetFilings.map(f => f.issuerCik)));
+
+  // 2. Fetch existing seeds AND existing research-queue entries for these CIKs
+  const [existingSeeds, existingQueue] = await Promise.all([
+    query<{ issuer_cik: string }>(
+      `SELECT issuer_cik FROM outreach_seed_watchlist WHERE issuer_cik = ANY($1)`,
+      [uniqueCiks]
+    ),
+    query<{ issuer_cik: string }>(
+      `SELECT issuer_cik FROM outreach_research_queue WHERE issuer_cik = ANY($1)`,
+      [uniqueCiks]
+    ).catch(() => [] as { issuer_cik: string }[]), // table may not exist yet; non-fatal
+  ]);
+
+  const existingCiks = new Set([
+    ...existingSeeds.map(s => s.issuer_cik),
+    ...existingQueue.map(s => s.issuer_cik),
+  ]);
+
+  // 3. For any CIK not already known, add to research queue — NEVER create a
+  //    seed with a guessed/fabricated email address.
+  for (const filing of targetFilings) {
+    if (existingCiks.has(filing.issuerCik)) continue;
+
+    const insiderIsRealPerson = isRealPersonName(filing.insiderName, filing.issuerName);
+    const contactPerson = insiderIsRealPerson
+      ? filing.insiderName!.trim()
+      : null; // unknown until researched
+
+    console.log(
+      `[workflow] 🔎 New company needs research before outreach: ${filing.issuerName} (CIK: ${filing.issuerCik})` +
+      (contactPerson ? ` — likely contact: ${contactPerson}` : "")
+    );
+
+    // Log to research queue so the dashboard can surface it for manual follow-up.
+    // live_enabled stays false until a real email is confirmed.
+    await query(
+      `INSERT INTO outreach_research_queue
+         (issuer_cik, issuer_name, ticker, form_type, filing_date,
+          likely_contact_person, likely_paper, filing_url, notes, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now())
+       ON CONFLICT (issuer_cik) DO UPDATE SET
+         last_seen_at = now(),
+         filing_date = EXCLUDED.filing_date,
+         form_type = EXCLUDED.form_type`,
+      [
+        filing.issuerCik,
+        filing.issuerName,
+        filing.ticker ?? null,
+        filing.formType,
+        new Date(filing.filedAt).toISOString().split("T")[0],
+        contactPerson,
+        filing.hasRestricted ? "Rule 144 restricted stock / block position" : "OTC company paper",
+        filing.filingUrl ?? null,
+        "Auto-detected via filing scan. Needs real contact email before outreach.",
+      ]
+    ).catch((err: Error) => {
+      // If the outreach_research_queue table doesn't exist yet, just warn — don't crash.
+      console.warn(`[workflow] Could not log to research queue (table may need migration): ${err.message}`);
+    });
+
+    existingCiks.add(filing.issuerCik);
+  }
 }

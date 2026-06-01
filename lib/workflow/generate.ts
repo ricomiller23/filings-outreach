@@ -62,11 +62,36 @@ function extractFirstName(name: string): string {
   if (!name || name === "Investor Relations" || name.includes("/")) return "";
   // Handle "Bregje \"Bee\" Roseboom-Van Kessel" → "Bee"
   const nickMatch = name.match(/"([^"]+)"/);
-  if (nickMatch) return nickMatch[1];
+  if (nickMatch) return titleCase(nickMatch[1]);
   // Handle "Daqing (David) Ye" → "David"
   const parenMatch = name.match(/\(([^)]+)\)/);
-  if (parenMatch) return parenMatch[1];
-  return name.split(/\s+/)[0];
+  if (parenMatch) return titleCase(parenMatch[1]);
+
+  const parts = name.split(/\s+/).filter(p => p.length > 0);
+  if (parts.length < 2) return titleCase(parts[0] || "");
+
+  // SEC format: "LastName FirstName MiddleInitial" (e.g. "Sanchez Alejandro M")
+  // Detect by: last part is a single letter/initial, or name has 3+ parts
+  // with no comma. In SEC filings, names are typically "Last First [Mid]".
+  // If there are 2+ parts and the name looks like SEC format (Last First),
+  // use the second part as the first name.
+  const lastPart = parts[parts.length - 1];
+  const isSECFormat = parts.length >= 2 && (
+    lastPart.length <= 2 || // middle initial like "M" or "Jr"
+    parts.length >= 3       // "LastName FirstName MiddleInitial"
+  );
+  if (isSECFormat) {
+    return titleCase(parts[1]); // Second token is the first name
+  }
+
+  // Default: first token is the first name (normal "First Last" format)
+  return titleCase(parts[0]);
+}
+
+/** Title-case a single word: "JOHN" → "John", "john" → "John" */
+function titleCase(s: string): string {
+  if (!s) return "";
+  return s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
 }
 
 function buildSubject(

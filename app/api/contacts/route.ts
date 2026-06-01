@@ -142,8 +142,8 @@ export async function POST(req: NextRequest) {
       automationEnabled = true
     } = body;
 
-    if (!contactName || !email) {
-      return NextResponse.json({ error: "contactName and email are required" }, { status: 400 });
+    if (!contactName) {
+      return NextResponse.json({ error: "contactName is required" }, { status: 400 });
     }
 
     const sql = `
@@ -161,7 +161,7 @@ export async function POST(req: NextRequest) {
       contactName,
       title || null,
       company || null,
-      email,
+      email || null,
       phone || null,
       source,
       isIndividual,
