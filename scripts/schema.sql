@@ -84,3 +84,74 @@ CREATE INDEX IF NOT EXISTS outreach_crm_reply_idx
 -- Index for suppression window (30-day)
 CREATE INDEX IF NOT EXISTS outreach_crm_sent_at_idx
   ON outreach_crm (email, sent_at);
+
+-- ─── CRM Contacts ────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS crm_contacts (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  contact_name TEXT NOT NULL,
+  title TEXT,
+  company TEXT,
+  email TEXT NOT NULL UNIQUE,
+  phone TEXT,
+  source TEXT DEFAULT 'manual_entry',
+  is_individual BOOLEAN DEFAULT true,
+  is_decision_maker BOOLEAN DEFAULT false,
+  influence_level TEXT DEFAULT 'influencer',
+  security_type TEXT,
+  position_size NUMERIC DEFAULT 0,
+  estimated_value NUMERIC DEFAULT 0,
+  security_description TEXT,
+  status TEXT DEFAULT 'Warm',
+  priority TEXT DEFAULT 'Medium',
+  last_contact_date TIMESTAMPTZ,
+  last_contact_method TEXT,
+  next_follow_up_date TIMESTAMPTZ,
+  next_follow_up_action TEXT,
+  touchpoints JSONB DEFAULT '[]'::jsonb,
+  deal_value NUMERIC DEFAULT 0,
+  close_probability NUMERIC DEFAULT 0,
+  expected_close_date TIMESTAMPTZ,
+  actual_close_date TIMESTAMPTZ,
+  notes TEXT,
+  tags TEXT[] DEFAULT '{}'::text[],
+  follow_up_sequence TEXT DEFAULT 'none',
+  automation_enabled BOOLEAN DEFAULT true,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- ─── 3(a)(10) Filings ──────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS filings_3a10 (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  filing_id TEXT,
+  cik TEXT,
+  company_name TEXT,
+  ticker TEXT,
+  filing_date TIMESTAMPTZ,
+  filing_type TEXT DEFAULT '3a10_exemption',
+  transaction_type TEXT,
+  securities_being_exchanged TEXT,
+  value_of_securities NUMERIC DEFAULT 0,
+  number_of_shares NUMERIC DEFAULT 0,
+  court_approval BOOLEAN DEFAULT false,
+  court_approval_date TIMESTAMPTZ,
+  exchange_ratio TEXT,
+  beneficial_holders INT DEFAULT 0,
+  security_type TEXT,
+  restriction_details TEXT,
+  holding_period INT DEFAULT 0,
+  source_url TEXT,
+  extracted_text TEXT,
+  extracted_by TEXT DEFAULT 'automated',
+  confidence_score NUMERIC DEFAULT 0,
+  is_new BOOLEAN DEFAULT true,
+  is_reviewed BOOLEAN DEFAULT false,
+  is_relevant BOOLEAN DEFAULT false,
+  relevance_score NUMERIC DEFAULT 0,
+  identified_contacts JSONB DEFAULT '[]'::jsonb,
+  outreach_status TEXT DEFAULT 'not_contacted',
+  outreach_contact_id UUID,
+  created_at TIMESTAMPTZ DEFAULT now(),
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+

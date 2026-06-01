@@ -1,0 +1,8 @@
+#!/usr/bin/expect -f
+set timeout 10
+spawn vercel env add CRON_SECRET production
+expect "What's the value of CRON_SECRET"
+send "my_secure_cron_secret_123\r"
+expect "Mark as sensitive? (y/N)"
+send "y\r"
+expect eof

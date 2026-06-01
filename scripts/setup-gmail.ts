@@ -64,9 +64,11 @@ To fix this:
   });
 
   console.log("\n🔐 Gmail OAuth2 Setup\n" + "─".repeat(50));
-  console.log("Opening browser for Google authorization...\n");
+  console.log("Please open the following URL in the browser to authorize:");
+  console.log(authUrl);
+  console.log("");
 
-  await openUrl(authUrl);
+  // await openUrl(authUrl);
 
   // Start local HTTP server to receive the OAuth callback
   const code = await new Promise<string>((resolve, reject) => {
