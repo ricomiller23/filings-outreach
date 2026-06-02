@@ -10,7 +10,7 @@ export interface GeneratedEmail {
 }
 
 const SENDER_NAME = "Rico Miller";
-const SENDER_EMAIL = process.env.SEND_AS_EMAIL ?? "ricomiller@icloud.com";
+const getSenderEmail = () => process.env.SEND_AS_EMAIL ?? "ricomiller@icloud.com";
 
 /**
  * Generate a personalized outreach email for a matched contact.
@@ -47,7 +47,7 @@ export function generateEmail(match: MatchedOutreach): GeneratedEmail {
     angle: best_angle,
     contactPerson: contact_person,
     senderName: SENDER_NAME,
-    senderEmail: SENDER_EMAIL,
+    senderEmail: getSenderEmail(),
   });
 
   return {

@@ -3,9 +3,9 @@
 import { google } from "googleapis";
 import { getOAuth2Client, checkSendAsAlias } from "./auth";
 
-const SEND_AS_EMAIL = process.env.SEND_AS_EMAIL ?? "ricomiller@icloud.com";
-const BCC_EMAIL = process.env.BCC_EMAIL ?? "ricomiller@icloud.com";
-const GMAIL_LABEL = process.env.GMAIL_LABEL ?? "AntiGravity/Filings-Outreach";
+const getSendAsEmail = () => process.env.SEND_AS_EMAIL ?? "ricomiller@icloud.com";
+const getBccEmail = () => process.env.BCC_EMAIL ?? "ricomiller@icloud.com";
+const getGmailLabel = () => process.env.GMAIL_LABEL ?? "AntiGravity/Filings-Outreach";
 const MAX_EMAILS_PER_RUN = 30;
 const MIN_DELAY_MS = 2 * 1000; // 2 seconds between sends to fit within Vercel timeout limits
 
@@ -29,7 +29,8 @@ export function resetRunCounter() {
  * Returns a blocking error message if not ready, or null if OK.
  */
 export async function validateSendReadiness(): Promise<string | null> {
-  const alias = await checkSendAsAlias(SEND_AS_EMAIL);
+  const sendAsEmail = getSendAsEmail();
+  const alias = await checkSendAsAlias(sendAsEmail);
 
   if (alias.error) {
     return (
@@ -48,11 +49,11 @@ export async function validateSendReadiness(): Promise<string | null> {
         : "\n   No send-as aliases found.";
 
     return (
-      `BLOCKING: ${SEND_AS_EMAIL} is NOT configured as a "Send mail as" alias in Gmail.\n${aliasListStr}\n\n` +
+      `BLOCKING: ${sendAsEmail} is NOT configured as a "Send mail as" alias in Gmail.\n${aliasListStr}\n\n` +
       `FIX REQUIRED:\n` +
       `1. Open Gmail → Settings (gear) → See all settings → Accounts and Import\n` +
       `2. Under "Send mail as", click "Add another email address"\n` +
-      `3. Enter: ${SEND_AS_EMAIL}\n` +
+      `3. Enter: ${sendAsEmail}\n` +
       `4. Choose "Send through Gmail" (or configure SMTP if required)\n` +
       `5. Complete the verification email confirmation\n` +
       `6. Re-run the daily workflow`
@@ -61,9 +62,9 @@ export async function validateSendReadiness(): Promise<string | null> {
 
   if (!alias.verified) {
     return (
-      `BLOCKING: ${SEND_AS_EMAIL} alias found but NOT verified in Gmail.\n\n` +
+      `BLOCKING: ${sendAsEmail} alias found but NOT verified in Gmail.\n\n` +
       `FIX REQUIRED:\n` +
-      `1. Check ${SEND_AS_EMAIL} for a Gmail verification email\n` +
+      `1. Check ${sendAsEmail} for a Gmail verification email\n` +
       `2. Click the confirmation link\n` +
       `3. Re-run the daily workflow`
     );
@@ -97,10 +98,12 @@ export async function sendEmail(params: {
   try {
     const auth = getOAuth2Client();
     const gmail = google.gmail({ version: "v1", auth });
+    const sendAsEmail = getSendAsEmail();
+    const bccEmail = getBccEmail();
 
     // Build RFC 2822 MIME message
-    const fromHeader = `Rico Miller <${SEND_AS_EMAIL}>`;
-    const bccHeader = BCC_EMAIL !== params.to ? `Bcc: ${BCC_EMAIL}\r\n` : "";
+    const fromHeader = `Rico Miller <${sendAsEmail}>`;
+    const bccHeader = bccEmail !== params.to ? `Bcc: ${bccEmail}\r\n` : "";
 
     const rawMessage = [
       `From: ${fromHeader}`,
@@ -149,15 +152,16 @@ async function applyLabel(
   messageId: string
 ): Promise<void> {
   try {
+    const gmailLabel = getGmailLabel();
     // Get or create the label
     const labelsRes = await gmail.users.labels.list({ userId: "me" });
-    let labelId = labelsRes.data.labels?.find((l) => l.name === GMAIL_LABEL)?.id;
+    let labelId = labelsRes.data.labels?.find((l) => l.name === gmailLabel)?.id;
 
     if (!labelId) {
       const created = await gmail.users.labels.create({
         userId: "me",
         requestBody: {
-          name: GMAIL_LABEL,
+          name: gmailLabel,
           labelListVisibility: "labelShow",
           messageListVisibility: "show",
         },
