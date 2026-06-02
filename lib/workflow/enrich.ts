@@ -163,7 +163,14 @@ export async function enrichResearchQueue(limit = 10): Promise<{ enrichedCount: 
             enrichedCount++;
           }
         } else {
-          console.log(`[enrich] ⏭ Could not find a verified personal/non-generic email for ${item.issuer_name}. Left in queue.`);
+          console.log(`[enrich] ⏭ Could not find a verified personal/non-generic email for ${item.issuer_name}. Setting status to 'skip'.`);
+          await query(
+            `UPDATE public.outreach_research_queue
+             SET status = 'skip',
+                 notes = COALESCE(notes || ' | ', '') || 'No verified personal business email found during automated search.'
+             WHERE queue_id = $1`,
+            [item.queue_id]
+          );
         }
       } catch (err: any) {
         const msg = err.message || String(err);
