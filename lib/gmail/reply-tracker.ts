@@ -80,9 +80,18 @@ export async function checkReplies(): Promise<ReplyStatus[]> {
 
       const snippet = reply.snippet ?? "";
       const classification = classifyReply(snippet, thread.email);
-      const repliedAt =
-        reply.payload?.headers?.find((h) => h.name === "Date")?.value ??
-        new Date().toISOString();
+      const dateHeader = reply.payload?.headers?.find((h) => h.name === "Date")?.value;
+      let repliedAt = new Date().toISOString();
+      if (dateHeader) {
+        try {
+          const parsedDate = new Date(dateHeader);
+          if (!isNaN(parsedDate.getTime())) {
+            repliedAt = parsedDate.toISOString();
+          }
+        } catch {
+          // Fallback to current time if parsing fails
+        }
+      }
 
       // Update CRM
       await updateReplyInCRM(thread.outreach_id, classification, repliedAt, snippet);
