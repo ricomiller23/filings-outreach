@@ -21,6 +21,7 @@ import {
 import { checkReplies } from "../gmail/reply-tracker";
 import { sendDailyReport, RunSummary } from "./report";
 import { isAuthConfigured } from "../gmail/auth";
+import { enrichResearchQueue } from "./enrich";
 
 export interface WorkflowResult {
   success: boolean;
@@ -120,6 +121,7 @@ export async function runDailyWorkflow(opts: {
   const lastRunAt = await getLastRunAt();
   let matches: import("./match").MatchedOutreach[] = [];
   filingsScanned = 0;
+  let enriched = false;
   
   // Try dynamic lookback windows to find at least 20 unsent matches:
   const lookbackTiers = [
@@ -140,6 +142,23 @@ export async function runDailyWorkflow(opts: {
       filingsScanned = Math.max(filingsScanned, filings.length);
       
       await ensureSeedsForFilings(filings);
+
+      // Automatically run web research and enrichment for pending items in the queue
+      if (!enriched) {
+        try {
+          console.log("[workflow] Running automated research queue enrichment...");
+          // Enrich up to 30 pending queue items in this run to stay within timeouts and rate limits
+          const enrichResult = await enrichResearchQueue(30);
+          console.log(`[workflow] Enrichment complete: enriched ${enrichResult.enrichedCount} contacts, ${enrichResult.errors.length} errors`);
+          if (enrichResult.errors.length > 0) {
+            errors.push(...enrichResult.errors.map(e => `Enrichment error: ${e}`));
+          }
+        } catch (err: any) {
+          console.error("[workflow] ❌ Enrichment error:", err.message || String(err));
+          errors.push(`Enrichment failed: ${err.message || String(err)}`);
+        }
+        enriched = true;
+      }
       
       const potentialMatches = await matchFilingsToSeeds(filings);
       
