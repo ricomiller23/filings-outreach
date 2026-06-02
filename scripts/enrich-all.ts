@@ -3,6 +3,19 @@ import * as dotenv from "dotenv";
 dotenv.config({ path: ".env.local" });
 
 import { enrichResearchQueue } from "../lib/workflow/enrich";
+import { queryOne } from "../lib/db";
+
+async function getRemainingCount(): Promise<number> {
+  try {
+    const res = await queryOne<{ count: string }>(
+      "SELECT count(*)::text as count FROM outreach_research_queue WHERE status = 'needs_research'"
+    );
+    return parseInt(res?.count || "0", 10);
+  } catch (err) {
+    console.error("Failed to query remaining count:", err);
+    return 0;
+  }
+}
 
 async function main() {
   const geminiKey = process.env.GEMINI_API_KEY;
@@ -13,14 +26,23 @@ async function main() {
     process.exit(1);
   }
 
-  console.log("🚀 Starting complete research queue enrichment...");
+  const initialCount = await getRemainingCount();
+  console.log(`🚀 Starting complete research queue enrichment. Initial pending items: ${initialCount}`);
   
   let totalEnriched = 0;
   let batchNum = 1;
   const batchSize = 10;
+  let consecutiveErrorBatches = 0;
+  let lastRemaining = initialCount;
 
   while (true) {
-    console.log(`\n📦 Processing Batch #${batchNum}...`);
+    const remaining = await getRemainingCount();
+    if (remaining === 0) {
+      console.log("🎉 Research queue is fully processed! All items are either promoted or skipped.");
+      break;
+    }
+
+    console.log(`\n📦 Processing Batch #${batchNum} (Remaining: ${remaining} items in queue)...`);
     const result = await enrichResearchQueue(batchSize);
     
     totalEnriched += result.enrichedCount;
@@ -30,24 +52,37 @@ async function main() {
       console.warn(`⚠️ Errors encountered in batch:`, result.errors);
     }
     
-    // If we processed 0 items and there are no errors, we are done
-    if (result.enrichedCount === 0 && result.errors.length === 0) {
-      console.log("🎉 Research queue is fully processed or no more enrichable items found.");
-      break;
-    }
-
-    // Stop if we hit a wall of consecutive errors to prevent wasting API quota
-    if (result.enrichedCount === 0 && result.errors.length > 0) {
-      console.log("🛑 No items were enriched and errors occurred. Stopping run to prevent API quota consumption.");
-      break;
+    const newRemaining = await getRemainingCount();
+    const progressMade = lastRemaining - newRemaining;
+    
+    if (progressMade > 0) {
+      console.log(`📈 Made progress: processed/skipped ${progressMade} items in this batch.`);
+      consecutiveErrorBatches = 0; // Reset error counter since we are making progress
+    } else {
+      console.log("⚠️ No progress made in this batch (0 items were promoted or skipped).");
+      if (result.errors.length > 0) {
+        consecutiveErrorBatches++;
+        console.warn(`Consecutive failed batches: ${consecutiveErrorBatches}/3`);
+        if (consecutiveErrorBatches >= 3) {
+          console.error("🛑 Stopping script because 3 consecutive batches failed to make progress due to API/network errors.");
+          break;
+        }
+      } else {
+        // No errors, but no progress made (shouldn't normally happen if remaining > 0, but safety check)
+        console.log("No items processed and no errors occurred. Stopping to prevent loop.");
+        break;
+      }
     }
     
+    lastRemaining = newRemaining;
     batchNum++;
-    // Add a small 2-second sleep to avoid hitting API rate limits aggressively
-    await new Promise((resolve) => setTimeout(resolve, 2000));
+    
+    // Sleep for 3 seconds between batches to respect API rate limits
+    await new Promise((resolve) => setTimeout(resolve, 3000));
   }
 
-  console.log(`\n🏁 Finished! Total contacts enriched and promoted: ${totalEnriched}`);
+  const finalRemaining = await getRemainingCount();
+  console.log(`\n🏁 Finished! Total contacts enriched and promoted: ${totalEnriched}. Remaining pending items: ${finalRemaining}`);
 }
 
 main().catch(console.error);

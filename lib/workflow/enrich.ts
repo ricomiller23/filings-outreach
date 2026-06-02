@@ -272,7 +272,7 @@ ${searchResults}
           responseMimeType: "application/json"
         }
       }),
-      signal: AbortSignal.timeout(15000)
+      signal: AbortSignal.timeout(25000)
     });
 
     if (!res.ok) {
