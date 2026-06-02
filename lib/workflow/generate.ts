@@ -20,7 +20,15 @@ const getSenderEmail = () => process.env.SEND_AS_EMAIL ?? "ricomiller@icloud.com
  */
 export function generateEmail(match: MatchedOutreach): GeneratedEmail {
   const { filing, seed } = match;
-  const { contact_person, target_company, likely_paper, best_angle } = seed;
+  let { contact_person, target_company, likely_paper, best_angle } = seed;
+
+  // Clean any incorrect Rule 415 references to Rule 144 in outbound emails
+  if (likely_paper) {
+    likely_paper = likely_paper.replace(/rule\s*415/gi, "Rule 144");
+  }
+  if (best_angle) {
+    best_angle = best_angle.replace(/rule\s*415/gi, "Rule 144");
+  }
 
   const filingDate = new Date(filing.filedAt).toLocaleDateString("en-US", {
     month: "long",

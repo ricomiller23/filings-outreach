@@ -1,6 +1,6 @@
 // scripts/test-orchestrator.ts
 import * as dotenv from "dotenv";
-dotenv.config({ path: "/Users/ericmiller/Projects/edgar-insider-scout/.env.local" });
+dotenv.config({ path: ".env.local" });
 
 import { runDailyWorkflow } from "../lib/workflow/orchestrator";
 
