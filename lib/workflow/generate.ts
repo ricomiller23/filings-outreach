@@ -9,14 +9,11 @@ export interface GeneratedEmail {
   match: MatchedOutreach;
 }
 
-const SENDER_NAME = "Rico Miller";
+const SENDER_NAME = "Eric Miller";
 const getSenderEmail = () => process.env.SEND_AS_EMAIL ?? "ricomiller@icloud.com";
 
 /**
  * Generate a personalized outreach email for a matched contact.
- * - 80–150 words
- * - Professional, direct, not spammy
- * - No emojis, no mass-marketing language
  */
 export function generateEmail(match: MatchedOutreach): GeneratedEmail {
   const { filing, seed } = match;
@@ -38,14 +35,15 @@ export function generateEmail(match: MatchedOutreach): GeneratedEmail {
 
   const issuerName = filing.issuerName || target_company;
 
-  // Personalized greeting
+  // Personalized greeting - Dear [Name],
   const firstName = extractFirstName(contact_person);
-  const greeting = firstName ? `${firstName},` : "Hello,";
+  const greetingName = firstName || (contact_person && contact_person !== "Investor Relations" ? contact_person : "Security Holder");
+  const greeting = `Dear ${greetingName},`;
 
-  // Subject line — credible, simple
-  const subject = buildSubject(issuerName, filing.formType, seed);
+  // Subject line — Block Trade Solution for Your Restricted Stock / [Company Name] Position
+  const subject = buildSubject(issuerName);
 
-  // Body — ~100 words, structured per spec
+  // Body — personalized Template 1
   const body = buildBody({
     greeting,
     issuerName,
@@ -56,6 +54,7 @@ export function generateEmail(match: MatchedOutreach): GeneratedEmail {
     contactPerson: contact_person,
     senderName: SENDER_NAME,
     senderEmail: getSenderEmail(),
+    ticker: filing.ticker,
   });
 
   return {
@@ -102,30 +101,21 @@ function titleCase(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
 }
 
-function buildSubject(
-  issuerName: string,
-  formType: string,
-  seed: MatchedOutreach["seed"]
-): string {
-  const likelyPaperShort = seed.likely_paper
-    .split(",")[0]
-    .replace(/(potential |low-confidence )/gi, "")
-    .trim()
-    .toLowerCase();
+function buildSubject(issuerName: string): string {
+  return `Block Trade Solution for Your Restricted Stock / ${issuerName} Position`;
+}
 
-  if (likelyPaperShort.includes("claim") || likelyPaperShort.includes("debt")) {
-    return `Interest in ${issuerName} claims / debt exposure`;
+function formatFormType(rawFormType: string): string {
+  const clean = rawFormType.trim();
+  if (/^144$/i.test(clean)) return "Form 144";
+  if (/^8-?K$/i.test(clean)) return "Form 8-K";
+  if (/^S-?1$/i.test(clean)) return "Form S-1";
+  if (/^S-?1\/A$/i.test(clean) || /^S-?1A$/i.test(clean)) return "Form S-1/A";
+  if (/^4$/i.test(clean)) return "Form 4";
+  if (!clean.toLowerCase().startsWith("form")) {
+    return `Form ${clean}`;
   }
-  if (likelyPaperShort.includes("convert")) {
-    return `Interest in ${issuerName} convert or related paper`;
-  }
-  if (likelyPaperShort.includes("block") || likelyPaperShort.includes("stock")) {
-    return `Inquiry regarding ${issuerName} stock or block position`;
-  }
-  if (formType === "S1" || formType === "S1A") {
-    return `Inquiry regarding ${issuerName} paper / issuance exposure`;
-  }
-  return `Interest in ${issuerName} — transferable paper inquiry`;
+  return clean;
 }
 
 interface BodyParams {
@@ -138,58 +128,51 @@ interface BodyParams {
   contactPerson: string;
   senderName: string;
   senderEmail: string;
+  ticker: string | null;
 }
 
 function buildBody(p: BodyParams): string {
-  const { greeting, issuerName, filingDate, likelyPaper, angle, senderName, senderEmail } = p;
+  const { greeting, issuerName, filingDate, formType, ticker, senderName, senderEmail } = p;
 
-  // Build the filing reference sentence
-  const filingRef = `I came across the recent ${issuerName} filing dated ${filingDate} and wanted to reach out directly.`;
+  const formattedFormType = formatFormType(formType);
+  const tickerStr = ticker ? ` (${ticker})` : "";
 
-  // Build the interest sentence — adapted from best_angle
-  const interestSentence = buildInterestSentence(issuerName, likelyPaper, angle);
+  return `${greeting}
 
-  // Standard routing ask
-  const routingAsk = `If you are not the right contact for this type of inquiry, I would appreciate a brief introduction to whoever handles it on your end.`;
+I'm writing to you regarding your position in ${issuerName}${tickerStr} and the challenges you may be facing in monetizing those securities, following the recent ${formattedFormType} filing submitted on ${filingDate}.
 
-  const body = `${greeting}
+The Problem You Know Well:
 
-${filingRef}
+Volume limits that prevent meaningful sales
+Inability to deposit shares at some firms
+Thin trading that makes block sales difficult
+Holding period restrictions complicating liquidity
+The frustration of watching value you can't access
 
-${interestSentence}
+The Solution We Offer: I specialize in facilitating block trades that take restricted securities off holders' books—quickly, efficiently, and with certainty of execution. We purchase:
 
-${routingAsk}
+Rule 144 shares with volume limitations
+Section 4(a)(1) control positions
+Section 3(a)(10) shares from debt settlements
+Convertible debentures that are underwater or difficult to monetize
+
+How We Can Help You: Instead of fighting the market with volume limits and deposit issues, we can take the entire position off your hands in a single block trade. This means:
+
+Immediate liquidity — no more waiting for trading windows
+Certainty of execution — we evaluate quickly and close efficiently
+No volume constraints — we buy the full block
+Clean exit — no lingering position or overhang
+
+My Background: I've been active in the restricted securities space since the late 1980s, with extensive experience in sourcing, evaluating, and closing transactions involving restricted and thinly traded positions. I understand the practical and legal considerations that come with these transactions, and I know how important speed and certainty are when you need liquidity.
+
+Next Step: If you have a position you'd like to discuss, I would welcome the opportunity to have a brief call to understand your situation and explore whether a block trade makes sense. I can evaluate opportunities quickly and move to close efficiently when the fit is right.
+
+Would you be available for a call this week or next? You can reach me at 480.287.2227 or reply to this email.
+
+Best regards,
 
 ${senderName}
-${senderEmail}`.trim();
 
-  return body;
-}
-
-function buildInterestSentence(
-  issuerName: string,
-  likelyPaper: string,
-  angle: string
-): string {
-  const paperLower = likelyPaper.toLowerCase();
-  const angleLower = angle.toLowerCase();
-
-  if (angleLower.includes("monetization") || angleLower.includes("convert")) {
-    return `We are actively looking to acquire convertible note exposure or conversion-stage stock in situations like this, and would be interested in speaking with you about a potential direct transaction if ${issuerName} paper is available for sale.`;
-  }
-  if (angleLower.includes("claims") || angleLower.includes("workout") || angleLower.includes("reorg")) {
-    return `We are interested in acquiring distressed lender claims or post-reorganization equity exposure in ${issuerName}, and we would welcome a bilateral discussion or an introduction to the appropriate desk handling this exposure.`;
-  }
-  if (angleLower.includes("block") || paperLower.includes("stock block")) {
-    return `We are exploring whether any affiliated or beneficial holders of ${issuerName} stock would consider a negotiated block sale, and I wanted to reach out to your team as a first step in that inquiry.`;
-  }
-  if (angleLower.includes("route") || angleLower.includes("debt capital")) {
-    return `We are interested in any transferable paper or legacy debt exposure connected to ${issuerName}, and I wanted to ask whether you could route this inquiry to the appropriate contact on the capital markets or treasury side.`;
-  }
-  if (angleLower.includes("treasury") || angleLower.includes("transferable")) {
-    return `We are interested in exploring any special-situations or transferable paper connected to ${issuerName}, and would appreciate a referral to the right contact in treasury or investor relations if that is more appropriate.`;
-  }
-
-  // Generic fallback
-  return `We would be interested in acquiring ${likelyPaper.split(",")[0].trim().toLowerCase()} connected to ${issuerName}, and I wanted to reach out to discuss whether a negotiated transaction might be possible.`;
+480.287.2227
+${senderEmail}`;
 }

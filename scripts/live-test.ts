@@ -59,7 +59,7 @@ If you received this, it confirms:
 Sent via: AntiGravity Filings Outreach System
 Time: ${new Date().toISOString()}
 
-Rico Miller
+Eric Miller
 ${SEND_AS}`;
 
   console.log(`\n[3] Sending test email to ${TEST_TARGET}...`);

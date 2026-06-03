@@ -102,7 +102,7 @@ export async function sendEmail(params: {
     const bccEmail = getBccEmail();
 
     // Build RFC 2822 MIME message
-    const fromHeader = `Rico Miller <${sendAsEmail}>`;
+    const fromHeader = `Eric Miller <${sendAsEmail}>`;
     const bccHeader = bccEmail !== params.to ? `Bcc: ${bccEmail}\r\n` : "";
 
     const rawMessage = [
