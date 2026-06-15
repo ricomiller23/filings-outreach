@@ -11,7 +11,7 @@
   "dependencies": {
     "dotenv": "^17.4.2",
     "googleapis": "^171.4.0",
-    "lucide-react": "^1.17.0",
+    "lucide-react": "^1.18.0",
     "next": "16.2.4",
     "node-cron": "^4.2.1",
     "nodemailer": "^8.0.7",

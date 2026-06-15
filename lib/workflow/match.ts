@@ -8,6 +8,7 @@ export interface MatchedOutreach {
   seed: SeedContact;
   seedId: string;
   matchedBy: "cik" | "name";
+  isGenericTarget: boolean;
 }
 
 /**
@@ -44,7 +45,7 @@ export async function matchFilingsToSeeds(
      FROM outreach_seed_watchlist WHERE live_enabled = true AND email IS NOT NULL`
   );
 
-  const dbSeeds = rawDbSeeds.filter(s => !isGenericEmail(s.email));
+  const dbSeeds = rawDbSeeds; // Removed the !isGenericEmail filter to restore match volume
 
 
   const matches: MatchedOutreach[] = [];
@@ -114,6 +115,7 @@ export async function matchFilingsToSeeds(
           seed: seedConfig,
           seedId: dbSeed.seed_id,
           matchedBy: "cik",
+          isGenericTarget: isGenericEmail(dbSeed.email),
         });
         continue;
       }
@@ -130,6 +132,7 @@ export async function matchFilingsToSeeds(
           seed: seedConfig,
           seedId: dbSeed.seed_id,
           matchedBy: "name",
+          isGenericTarget: isGenericEmail(dbSeed.email),
         });
       }
     }

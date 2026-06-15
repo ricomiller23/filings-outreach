@@ -43,19 +43,35 @@ export function generateEmail(match: MatchedOutreach): GeneratedEmail {
   // Subject line — Block Trade Solution for Your Restricted Stock / [Company Name] Position
   const subject = buildSubject(issuerName);
 
-  // Body — personalized Template 1
-  const body = buildBody({
-    greeting,
-    issuerName,
-    filingDate,
-    formType: filing.formType,
-    likelyPaper: likely_paper,
-    angle: best_angle,
-    contactPerson: contact_person,
-    senderName: SENDER_NAME,
-    senderEmail: getSenderEmail(),
-    ticker: filing.ticker,
-  });
+  // Body — structured per spec
+  let body = "";
+  if (!match.isGenericTarget) {
+    body = buildBody({
+      greeting,
+      issuerName,
+      filingDate,
+      formType: filing.formType,
+      likelyPaper: likely_paper,
+      angle: best_angle,
+      contactPerson: contact_person,
+      senderName: SENDER_NAME,
+      senderEmail: getSenderEmail(),
+      ticker: filing.ticker,
+    });
+  } else {
+    body = buildFallbackBody({
+      greeting,
+      issuerName,
+      filingDate,
+      formType: filing.formType,
+      likelyPaper: likely_paper,
+      angle: best_angle,
+      contactPerson: contact_person,
+      senderName: SENDER_NAME,
+      senderEmail: getSenderEmail(),
+      ticker: filing.ticker,
+    });
+  }
 
   return {
     to: seed.email,
@@ -175,4 +191,53 @@ ${senderName}
 
 480.287.2227
 ${senderEmail}`;
+}
+
+function buildInterestSentence(
+  issuerName: string,
+  likelyPaper: string,
+  angle: string
+): string {
+  const paperLower = likelyPaper.toLowerCase();
+  const angleLower = angle.toLowerCase();
+
+  if (angleLower.includes("monetization") || angleLower.includes("convert")) {
+    return `We are actively looking to acquire convertible note exposure or conversion-stage stock in situations like this, and would be interested in speaking with you about a potential direct transaction if ${issuerName} paper is available for sale.`;
+  }
+  if (angleLower.includes("claims") || angleLower.includes("workout") || angleLower.includes("reorg")) {
+    return `We are interested in acquiring distressed lender claims or post-reorganization equity exposure in ${issuerName}, and we would welcome a bilateral discussion or an introduction to the appropriate desk handling this exposure.`;
+  }
+  if (angleLower.includes("block") || paperLower.includes("stock block")) {
+    return `We are exploring whether any affiliated or beneficial holders of ${issuerName} stock would consider a negotiated block sale, and I wanted to reach out to your team as a first step in that inquiry.`;
+  }
+  if (angleLower.includes("route") || angleLower.includes("debt capital")) {
+    return `We are interested in any transferable paper or legacy debt exposure connected to ${issuerName}, and I wanted to ask whether you could route this inquiry to the appropriate contact on the capital markets or treasury side.`;
+  }
+  if (angleLower.includes("treasury") || angleLower.includes("transferable")) {
+    return `We are interested in exploring any special-situations or transferable paper connected to ${issuerName}, and would appreciate a referral to the right contact in treasury or investor relations if that is more appropriate.`;
+  }
+
+  // Generic fallback
+  return `We would be interested in acquiring ${likelyPaper.split(",")[0].trim().toLowerCase()} connected to ${issuerName}, and I wanted to reach out to discuss whether a negotiated transaction might be possible.`;
+}
+
+function buildFallbackBody(p: BodyParams): string {
+  const { greeting, issuerName, filingDate, likelyPaper, angle, senderName, senderEmail } = p;
+
+  const filingRef = `I came across the recent ${issuerName} filing dated ${filingDate} and wanted to reach out directly.`;
+  const interestSentence = buildInterestSentence(issuerName, likelyPaper, angle);
+  const routingAsk = `If you are not the right contact for this type of inquiry, I would appreciate a brief introduction to whoever handles it on your end.`;
+
+  return `${greeting}
+
+${filingRef}
+
+${interestSentence}
+
+${routingAsk}
+
+Best regards,
+
+${senderName}
+${senderEmail}`.trim();
 }
