@@ -39,7 +39,7 @@ export function generateEmail(match: MatchedOutreach): GeneratedEmail {
   const isGeneric = (name: string | null) => {
     if (!name) return true;
     const lower = name.toLowerCase();
-    return lower.includes("hello") || lower.includes("investor relations") || lower.includes("ir desk") || lower.length <= 2 || lower === "unknown";
+    return lower.includes("hello") || lower.includes("contact") || lower.includes("investor relations") || lower.includes("ir desk") || lower.length <= 2 || lower === "unknown";
   };
 
   const firstName = extractFirstName(contact_person);
