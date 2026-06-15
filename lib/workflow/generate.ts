@@ -35,10 +35,21 @@ export function generateEmail(match: MatchedOutreach): GeneratedEmail {
 
   const issuerName = filing.issuerName || target_company;
 
-  // Personalized greeting - Dear [Name],
+  // Personalized greeting
+  const isGeneric = (name: string | null) => {
+    if (!name) return true;
+    const lower = name.toLowerCase();
+    return lower.includes("hello") || lower.includes("investor relations") || lower.includes("ir desk") || lower.length <= 2 || lower === "unknown";
+  };
+
   const firstName = extractFirstName(contact_person);
-  const greetingName = firstName || (contact_person && contact_person !== "Investor Relations" ? contact_person : "Security Holder");
-  const greeting = `Dear ${greetingName},`;
+  
+  let greeting = "Hello,";
+  if (firstName && !isGeneric(firstName)) {
+    greeting = `Dear ${firstName},`;
+  } else if (contact_person && !isGeneric(contact_person)) {
+    greeting = `Dear ${contact_person},`;
+  }
 
   // Subject line — Block Trade Solution for Your Restricted Stock / [Company Name] Position
   const subject = buildSubject(issuerName);
