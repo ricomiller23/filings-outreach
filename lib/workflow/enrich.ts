@@ -24,7 +24,7 @@ export async function enrichResearchQueue(limit = 10): Promise<{ enrichedCount: 
 
   if (!geminiKey || !tavilyKey) {
     console.log("[enrich] ⚠️ GEMINI_API_KEY or TAVILY_API_KEY not configured in environment variables. Skipping automatic web research.");
-    return { enrichedCount: 0, errors: ["API keys not configured."] };
+    return { enrichedCount: 0, errors: [] };
   }
 
   try {

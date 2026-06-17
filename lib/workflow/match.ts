@@ -110,13 +110,18 @@ export async function matchFilingsToSeeds(
         dbSeed.issuer_cik === filing.issuerCik
       ) {
         seen.add(key);
-        matches.push({
-          filing,
-          seed: seedConfig,
-          seedId: dbSeed.seed_id,
-          matchedBy: "cik",
-          isGenericTarget: isGenericEmail(dbSeed.email),
-        });
+        // Strict Human-Only Filter: Reject if email is generic OR contact person is not a real name
+        if (!isGenericEmail(dbSeed.email) && isRealPersonName(seedConfig.contact_person, filing.issuerName)) {
+          matches.push({
+            filing,
+            seed: seedConfig,
+            seedId: dbSeed.seed_id,
+            matchedBy: "cik",
+            isGenericTarget: false,
+          });
+        } else {
+          console.log(`[match] 🚫 Skipped non-human target: ${dbSeed.email} / ${seedConfig.contact_person}`);
+        }
         continue;
       }
 
@@ -127,18 +132,23 @@ export async function matchFilingsToSeeds(
       );
       if (nameMatch) {
         seen.add(key);
-        matches.push({
-          filing,
-          seed: seedConfig,
-          seedId: dbSeed.seed_id,
-          matchedBy: "name",
-          isGenericTarget: isGenericEmail(dbSeed.email),
-        });
+        // Strict Human-Only Filter
+        if (!isGenericEmail(dbSeed.email) && isRealPersonName(seedConfig.contact_person, filing.issuerName)) {
+          matches.push({
+            filing,
+            seed: seedConfig,
+            seedId: dbSeed.seed_id,
+            matchedBy: "name",
+            isGenericTarget: false,
+          });
+        } else {
+          console.log(`[match] 🚫 Skipped non-human target: ${dbSeed.email} / ${seedConfig.contact_person}`);
+        }
       }
     }
   }
 
-  console.log(`[match] ${matches.length} target matches found across ${filings.length} filings`);
+  console.log(`[match] ${matches.length} strict human target matches found across ${filings.length} filings`);
   return matches;
 }
 
@@ -153,6 +163,10 @@ export function isRealPersonName(insiderName: string | null, issuerName: string)
   // If the insider name matches the issuer/company name, it's not a person
   if (name.toLowerCase() === issuerName.toLowerCase()) return false;
 
+  // If the name is exactly the first word of the issuer (e.g. "Baidu" for "Baidu, Inc."), it's probably the company
+  const issuerFirstWord = issuerName.split(/\s+/)[0].replace(/[.,\/#!$%\^&\*;:{}=\-_`~()]/g,"").toLowerCase();
+  if (name.toLowerCase() === issuerFirstWord) return false;
+
   // Check for corporate suffixes that indicate an entity
   const entityPatterns = [
     /\b(inc|corp|co|ltd|llc|lp|plc|holdings|group|trust|fund|capital|partners|ventures|gmbh|s\.a\.|n\.v\.|ag)\b/i,
@@ -162,9 +176,21 @@ export function isRealPersonName(insiderName: string | null, issuerName: string)
     if (pat.test(name)) return false;
   }
 
-  // A person's name should have at least 2 tokens (first + last)
+  // Explicitly block generic placeholders
+  const lowerName = name.toLowerCase();
+  if (
+    lowerName === "investor relations" ||
+    lowerName.includes("ir desk") ||
+    lowerName.includes("contact") ||
+    lowerName.includes("hello") ||
+    lowerName === "investors"
+  ) {
+    return false;
+  }
+
+  // A person's name should have at least 1 token
   const tokens = name.split(/\s+/).filter(t => t.length > 0);
-  if (tokens.length < 2) return false;
+  if (tokens.length < 1) return false;
 
   return true;
 }

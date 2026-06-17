@@ -12,82 +12,82 @@ export async function GET(req: NextRequest) {
     const offset = parseInt(searchParams.get("offset") ?? "0");
     const search = searchParams.get("search") || "";
     const status = searchParams.get("status");
-    const securityType = searchParams.get("securityType");
-    const source = searchParams.get("source");
-    const isIndividual = searchParams.get("isIndividual");
-    const sortBy = searchParams.get("sortBy") || "created_at";
-    const sortOrder = searchParams.get("sortOrder") || "DESC";
 
     const conditions: string[] = [];
     const params: unknown[] = [];
     let paramIndex = 1;
 
     if (search) {
-      conditions.push(`(contact_name ILIKE $${paramIndex} OR company ILIKE $${paramIndex} OR email ILIKE $${paramIndex})`);
+      conditions.push(`(contact_person ILIKE $${paramIndex} OR target_company ILIKE $${paramIndex} OR email ILIKE $${paramIndex})`);
       params.push(`%${search}%`);
       paramIndex++;
     }
 
     if (status) {
-      conditions.push(`status = $${paramIndex}`);
-      params.push(status);
-      paramIndex++;
-    }
-
-    if (securityType) {
-      conditions.push(`security_type = $${paramIndex}`);
-      params.push(securityType);
-      paramIndex++;
-    }
-
-    if (source) {
-      conditions.push(`source = $${paramIndex}`);
-      params.push(source);
-      paramIndex++;
-    }
-
-    if (isIndividual !== null && isIndividual !== undefined && isIndividual !== "") {
-      conditions.push(`is_individual = $${paramIndex}`);
-      params.push(isIndividual === "true");
-      paramIndex++;
+      // Map mock status to real reply_status roughly
+      // Hot = interested, Warm = awaiting, Cold = passed, etc.
+      if (status === 'Hot') conditions.push(`reply_status = 'interested'`);
+      else if (status === 'Warm') conditions.push(`reply_status = 'awaiting'`);
+      else if (status === 'Cold') conditions.push(`reply_status = 'passed'`);
+      else if (status === 'Dead') conditions.push(`reply_status = 'bounced'`);
+      else if (status === 'Closed_Won') conditions.push(`reply_status = 'won'`);
+      else conditions.push(`reply_status = $${paramIndex}`);
+      
+      if (!['Hot', 'Warm', 'Cold', 'Dead', 'Closed_Won'].includes(status)) {
+        params.push(status);
+        paramIndex++;
+      }
     }
 
     const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
 
-    // Allowed sort columns for safety
-    const allowedSortColumns = [
-      "created_at",
-      "updated_at",
-      "contact_name",
-      "company",
-      "deal_value",
-      "priority",
-      "last_contact_date",
-      "next_follow_up_date",
-      "status"
-    ];
-    const safeSortBy = allowedSortColumns.includes(sortBy) ? sortBy : "created_at";
-    const safeSortOrder = sortOrder.toUpperCase() === "ASC" ? "ASC" : "DESC";
-
-    // Priority ordering custom sort if selected
-    let orderByStr = `ORDER BY ${safeSortBy} ${safeSortOrder}`;
-    if (sortBy === "priority") {
-      orderByStr = `ORDER BY CASE priority 
-        WHEN 'High' THEN 1 
-        WHEN 'Medium' THEN 2 
-        WHEN 'Low' THEN 3 
-        ELSE 4 END ${safeSortOrder}`;
-    }
-
+    // We map outreach_crm to look like crm_contacts
     const sql = `
-      SELECT * FROM crm_contacts
+      SELECT 
+        outreach_id as id,
+        contact_person as contact_name,
+        title,
+        target_company as company,
+        email,
+        phone,
+        'outreach' as source,
+        true as is_individual,
+        false as is_decision_maker,
+        'influencer' as influence_level,
+        'Rule_144' as security_type,
+        0 as position_size,
+        0 as estimated_value,
+        likely_paper as security_description,
+        filing_url,
+        CASE 
+          WHEN reply_status = 'interested' THEN 'Hot'
+          WHEN reply_status = 'passed' THEN 'Cold'
+          WHEN reply_status = 'bounced' THEN 'Dead'
+          WHEN reply_status = 'won' THEN 'Closed_Won'
+          ELSE 'Warm' 
+        END as status,
+        CASE 
+          WHEN score >= 80 THEN 'High'
+          WHEN score >= 50 THEN 'Medium'
+          ELSE 'Low'
+        END as priority,
+        score * 10000 as deal_value,
+        sent_at as created_at,
+        notes
+      FROM outreach_crm
       ${whereClause}
-      ${orderByStr}
+      ORDER BY 
+        CASE 
+          WHEN email ILIKE 'ir@%' OR email ILIKE 'info@%' OR email ILIKE 'contact@%' OR email ILIKE 'investor%' THEN 3
+          WHEN phone IS NOT NULL AND phone != '' AND phone != 'unknown' THEN 1
+          ELSE 2
+        END ASC,
+        sent_at DESC
       LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
     `;
 
     const countSql = `
-      SELECT COUNT(*) as count FROM crm_contacts
+      SELECT COUNT(*) as count FROM outreach_crm
       ${whereClause}
     `;
 

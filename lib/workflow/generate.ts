@@ -51,6 +51,11 @@ export function generateEmail(match: MatchedOutreach): GeneratedEmail {
     greeting = `Dear ${contact_person},`;
   }
 
+  // Absolute safety net for any edge case
+  if (greeting.toLowerCase().includes("dear hello") || greeting.toLowerCase().includes("dear contact") || greeting.toLowerCase().includes("dear investor")) {
+    greeting = "Hello,";
+  }
+
   // Subject line — Block Trade Solution for Your Restricted Stock / [Company Name] Position
   const subject = buildSubject(issuerName);
 

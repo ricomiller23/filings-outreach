@@ -1,12 +1,13 @@
 // app/dashboard/page.tsx
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { 
   Plus, Search, SlidersHorizontal, ArrowUpDown, Download, 
   Trash2, Mail, Phone, Calendar, User, Clock, CheckCircle2, 
   AlertCircle, ChevronRight, FileText, Settings, Star, Sparkles,
-  ArrowRight, MessageSquare, Play, RefreshCw, Send, Check
+  ArrowRight, MessageSquare, Play, RefreshCw, Send, Check,
+  ExternalLink, Filter, ChevronLeft, ChevronDown, X, Eye
 } from "lucide-react";
 
 interface CRMRecord {
@@ -33,6 +34,7 @@ interface ContactRecord {
   company?: string;
   email: string;
   phone?: string;
+  filing_url?: string;
   source: string;
   is_individual: boolean;
   is_decision_maker: boolean;
@@ -94,6 +96,74 @@ interface GmailStatus {
   error?: string;
 }
 
+interface FilingRecord {
+  id: string;
+  accessionNumber: string;
+  formType: string;
+  filedAt: string;
+  periodOfReport: string;
+  score: number;
+  hasAgedDebt: boolean;
+  hasRestricted: boolean;
+  has3a10: boolean;
+  rawXmlUrl: string;
+  primaryDocUrl: string;
+  createdAt: string;
+  issuerId: string;
+  issuerName: string;
+  issuerTicker: string;
+  marketTier: string;
+  issuerCik: string;
+  insiderId: string;
+  insiderName: string;
+  insiderCik: string;
+}
+
+interface FilingDetailData {
+  filing: Record<string, unknown>;
+  transactions: Array<{
+    id: string;
+    tableType: string;
+    securityTitle: string;
+    transactionDate: string;
+    transactionCode: string;
+    shares: number;
+    pricePerShare: number;
+    acquiredDisposed: string;
+    sharesOwnedAfter: number;
+  }>;
+  insiderRoles: Array<{
+    isDirector: boolean;
+    isOfficer: boolean;
+    isTenPctOwn: boolean;
+    officerTitle: string;
+    firstSeen: string;
+    lastSeen: string;
+  }>;
+}
+
+const FORM_TYPES = ["F3", "F3A", "F4", "F4A", "F5", "S1", "S1A", "SC13D", "SC13G", "OTHER"] as const;
+const MARKET_TIERS = ["OTCBB", "OTCQB", "OTCQX", "PINK_CURRENT", "PINK_LIMITED", "PINK_NO_INFO", "GREY", "EXPERT", "NYSE", "NASDAQ", "OTHER"] as const;
+
+const SCORE_COLORS: Record<string, string> = {
+  high: "bg-emerald-950/50 text-emerald-400 border border-emerald-800/40",
+  medium: "bg-amber-950/50 text-amber-400 border border-amber-800/40",
+  low: "bg-zinc-800 text-zinc-400 border border-zinc-700/40",
+};
+
+function getScoreColor(score: number): string {
+  if (score >= 70) return SCORE_COLORS.high;
+  if (score >= 40) return SCORE_COLORS.medium;
+  return SCORE_COLORS.low;
+}
+
+function formatShortDate(d?: string) {
+  if (!d) return "—";
+  return new Date(d).toLocaleDateString("en-US", {
+    month: "short", day: "numeric", year: "numeric",
+  });
+}
+
 const PIPELINE_COLUMNS = ["Hot", "Warm", "Cold", "Closed_Won", "Closed_Lost", "Dead"] as const;
 
 const STATUS_COLORS: Record<string, string> = {
@@ -134,12 +204,53 @@ function formatUSD(num: number) {
   }).format(num);
 }
 
+function isGenericEmailLocal(email?: string | null): boolean {
+  if (!email) return false;
+  const cleanEmail = email.trim().toLowerCase();
+  const parts = cleanEmail.split('@');
+  if (parts.length !== 2) return false;
+  const localPart = parts[0].replace(/[._-]/g, '');
+  const genericPrefixes = [
+    "ir", "info", "contact", "sales", "support", "admin", "jobs", "careers", "marketing",
+    "press", "media", "investorrelations", "investors", "office", "help", "hello",
+    "enquiries", "inquiries", "team", "contactus", "feedback", "pr", "irdesk", "sec",
+    "compliance", "legal"
+  ];
+  return genericPrefixes.includes(localPart);
+}
+
+function isRealPersonNameLocal(name?: string | null): boolean {
+  if (!name || name.trim().length === 0) return false;
+  const n = name.trim().toLowerCase();
+  if (
+    n === "investor relations" ||
+    n === "investor relations contact" ||
+    n.includes("ir desk") ||
+    n.includes("contact") ||
+    n.includes("hello") ||
+    n === "investors"
+  ) return false;
+  
+  const entityPatterns = [
+    /\b(inc|corp|co|ltd|llc|lp|plc|holdings|group|trust|fund|capital|partners|ventures|gmbh|s\.a\.|n\.v\.|ag)\b/i,
+    /\b(bank|association|foundation|committee|council)\b/i,
+  ];
+  for (const pat of entityPatterns) {
+    if (pat.test(n)) return false;
+  }
+  
+  const tokens = n.split(/\s+/).filter(t => t.length > 0);
+  if (tokens.length < 2) return false;
+  
+  return true;
+}
+
 export default function DashboardClient() {
   const [contacts, setContacts] = useState<ContactRecord[]>([]);
   const [watchlist, setWatchlist] = useState<WatchlistRecord[]>([]);
   const [runLog, setRunLog] = useState<RunLog[]>([]);
   const [gmailStatus, setGmailStatus] = useState<GmailStatus | null>(null);
-  const [activeTab, setActiveTab] = useState<"pipeline" | "contacts" | "watchlist" | "sequences" | "log">("pipeline");
+  const [activeTab, setActiveTab] = useState<"pipeline" | "filings" | "contacts" | "watchlist" | "sequences" | "log">("pipeline");
   const [loading, setLoading] = useState(true);
   
   // Pipeline filter / view state
@@ -148,6 +259,7 @@ export default function DashboardClient() {
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
   const [securityFilter, setSecurityFilter] = useState("");
+  const [humanOnlyFilter, setHumanOnlyFilter] = useState(false);
   
   // Trigger workflow state
   const [triggering, setTriggering] = useState(false);
@@ -157,6 +269,28 @@ export default function DashboardClient() {
   const [noteText, setNoteText] = useState("");
   const [touchpointType, setTouchpointType] = useState("note_added");
   const [touchpointOutcome, setTouchpointOutcome] = useState("neutral");
+
+  // Filings Explorer State
+  const [filingsData, setFilingsData] = useState<FilingRecord[]>([]);
+  const [filingsTotal, setFilingsTotal] = useState(0);
+  const [filingsTotalPages, setFilingsTotalPages] = useState(0);
+  const [filingsLoading, setFilingsLoading] = useState(false);
+  const [filingsSearch, setFilingsSearch] = useState("");
+  const [filingsFormType, setFilingsFormType] = useState("");
+  const [filingsMarketTier, setFilingsMarketTier] = useState("");
+  const [filingsHasAgedDebt, setFilingsHasAgedDebt] = useState(false);
+  const [filingsHasRestricted, setFilingsHasRestricted] = useState(false);
+  const [filingsHas3a10, setFilingsHas3a10] = useState(false);
+  const [filingsMinScore, setFilingsMinScore] = useState("");
+  const [filingsDateFrom, setFilingsDateFrom] = useState("");
+  const [filingsDateTo, setFilingsDateTo] = useState("");
+  const [filingsSortBy, setFilingsSortBy] = useState("filedAt");
+  const [filingsSortDir, setFilingsSortDir] = useState("desc");
+  const [filingsPage, setFilingsPage] = useState(1);
+  const [selectedFiling, setSelectedFiling] = useState<FilingDetailData | null>(null);
+  const [selectedFilingRow, setSelectedFilingRow] = useState<FilingRecord | null>(null);
+  const [filingDetailLoading, setFilingDetailLoading] = useState(false);
+  const [showFilingsFilters, setShowFilingsFilters] = useState(false);
   const [followupDate, setFollowupDate] = useState("");
   const [followupAction, setFollowupAction] = useState("");
 
@@ -211,6 +345,61 @@ export default function DashboardClient() {
   useEffect(() => {
     loadData();
   }, []);
+
+  const loadFilings = useCallback(async (pageOverride?: number) => {
+    setFilingsLoading(true);
+    try {
+      const p = pageOverride ?? filingsPage;
+      const qp = new URLSearchParams();
+      if (filingsSearch) qp.set("search", filingsSearch);
+      if (filingsFormType) qp.set("formType", filingsFormType);
+      if (filingsMarketTier) qp.set("marketTier", filingsMarketTier);
+      if (filingsHasAgedDebt) qp.set("hasAgedDebt", "true");
+      if (filingsHasRestricted) qp.set("hasRestricted", "true");
+      if (filingsHas3a10) qp.set("has3a10", "true");
+      if (filingsMinScore) qp.set("minScore", filingsMinScore);
+      if (filingsDateFrom) qp.set("dateFrom", filingsDateFrom);
+      if (filingsDateTo) qp.set("dateTo", filingsDateTo);
+      qp.set("sortBy", filingsSortBy);
+      qp.set("sortDir", filingsSortDir);
+      qp.set("page", String(p));
+      qp.set("limit", "50");
+      const res = await fetch(`/api/filings?${qp.toString()}`, { cache: "no-store" });
+      const json = await res.json();
+      setFilingsData(json.data ?? []);
+      setFilingsTotal(json.pagination?.total ?? 0);
+      setFilingsTotalPages(json.pagination?.totalPages ?? 0);
+    } catch (e) {
+      console.error("[filings] load error", e);
+    } finally {
+      setFilingsLoading(false);
+    }
+  }, [filingsSearch, filingsFormType, filingsMarketTier, filingsHasAgedDebt, filingsHasRestricted, filingsHas3a10, filingsMinScore, filingsDateFrom, filingsDateTo, filingsSortBy, filingsSortDir, filingsPage]);
+
+  useEffect(() => {
+    if (activeTab === "filings") {
+      loadFilings();
+    }
+  }, [activeTab, loadFilings]);
+
+  function handleFilingsSearch() {
+    setFilingsPage(1);
+    loadFilings(1);
+  }
+
+  async function openFilingDetail(filing: FilingRecord) {
+    setSelectedFilingRow(filing);
+    setFilingDetailLoading(true);
+    try {
+      const res = await fetch(`/api/filings/${filing.id}`, { cache: "no-store" });
+      const json = await res.json();
+      setSelectedFiling(json.data ?? null);
+    } catch (e) {
+      console.error("[filing-detail] Error:", e);
+    } finally {
+      setFilingDetailLoading(false);
+    }
+  }
 
   async function handleAddContact(e: React.FormEvent) {
     e.preventDefault();
@@ -358,8 +547,9 @@ export default function DashboardClient() {
     
     const matchesStatus = statusFilter ? c.status === statusFilter : true;
     const matchesSecurity = securityFilter ? c.security_type === securityFilter : true;
+    const matchesHuman = humanOnlyFilter ? (isRealPersonNameLocal(c.contact_name) && !isGenericEmailLocal(c.email)) : true;
 
-    return matchesSearch && matchesStatus && matchesSecurity;
+    return matchesSearch && matchesStatus && matchesSecurity && matchesHuman;
   });
 
   const getPipelineCount = (status: string) => {
@@ -445,6 +635,7 @@ export default function DashboardClient() {
           <div className="flex gap-2 overflow-x-auto pb-1 md:pb-0">
             {[
               { id: "pipeline", label: "Pipeline Board" },
+              { id: "filings", label: "Filings Explorer" },
               { id: "contacts", label: "All Contacts" },
               { id: "sequences", label: "Follow-Up Sequences" },
               { id: "watchlist", label: "Watchlist" },
@@ -546,6 +737,305 @@ export default function DashboardClient() {
               </div>
             )}
 
+            {/* Filings Explorer Tab */}
+            {activeTab === "filings" && (
+              <div className="space-y-4">
+                {/* Search & Filter Bar */}
+                <div className="bg-[#0F1218]/40 border border-[#1B2030]/80 rounded-xl overflow-hidden">
+                  <div className="p-4 border-b border-[#1B2030] bg-[#0A0C10]/40">
+                    {/* Top row: search + toggle filters */}
+                    <div className="flex flex-col md:flex-row md:items-center gap-3">
+                      <div className="relative flex-1 max-w-lg">
+                        <Search className="absolute left-3 top-2.5 h-4 w-4 text-[#8892A6]/50" />
+                        <input
+                          type="text"
+                          placeholder="Search issuer name, ticker, or insider..."
+                          value={filingsSearch}
+                          onChange={(e) => setFilingsSearch(e.target.value)}
+                          onKeyDown={(e) => e.key === "Enter" && handleFilingsSearch()}
+                          className="w-full pl-9 pr-4 py-2 bg-[#07080B] border border-[#1B2030] rounded-lg text-xs text-[#E8ECF4] placeholder-[#8892A6]/50 outline-none focus:border-cyan-400/40"
+                        />
+                      </div>
+
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <select
+                          value={filingsFormType}
+                          onChange={(e) => { setFilingsFormType(e.target.value); setFilingsPage(1); }}
+                          className="bg-[#07080B] border border-[#1B2030] rounded-lg text-xs px-3 py-2 text-[#8892A6] outline-none"
+                        >
+                          <option value="">All Form Types</option>
+                          {FORM_TYPES.map(ft => <option key={ft} value={ft}>{ft}</option>)}
+                        </select>
+
+                        <select
+                          value={filingsMarketTier}
+                          onChange={(e) => { setFilingsMarketTier(e.target.value); setFilingsPage(1); }}
+                          className="bg-[#07080B] border border-[#1B2030] rounded-lg text-xs px-3 py-2 text-[#8892A6] outline-none"
+                        >
+                          <option value="">All Market Tiers</option>
+                          {MARKET_TIERS.map(mt => <option key={mt} value={mt}>{mt.replace(/_/g, " ")}</option>)}
+                        </select>
+
+                        <select
+                          value={`${filingsSortBy}-${filingsSortDir}`}
+                          onChange={(e) => {
+                            const [sb, sd] = e.target.value.split("-");
+                            setFilingsSortBy(sb);
+                            setFilingsSortDir(sd);
+                            setFilingsPage(1);
+                          }}
+                          className="bg-[#07080B] border border-[#1B2030] rounded-lg text-xs px-3 py-2 text-[#8892A6] outline-none"
+                        >
+                          <option value="filedAt-desc">Date Filed ↓</option>
+                          <option value="filedAt-asc">Date Filed ↑</option>
+                          <option value="score-desc">Score ↓</option>
+                          <option value="score-asc">Score ↑</option>
+                          <option value="issuerName-asc">Issuer A→Z</option>
+                          <option value="issuerName-desc">Issuer Z→A</option>
+                        </select>
+
+                        <button
+                          onClick={() => setShowFilingsFilters(!showFilingsFilters)}
+                          className={`flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg border transition-all ${
+                            showFilingsFilters || filingsHasAgedDebt || filingsHasRestricted || filingsHas3a10 || filingsMinScore || filingsDateFrom || filingsDateTo
+                              ? "border-cyan-400/50 bg-cyan-400/10 text-cyan-400"
+                              : "border-[#1B2030] bg-[#07080B] text-[#8892A6] hover:text-[#E8ECF4]"
+                          }`}
+                        >
+                          <Filter className="h-3 w-3" />
+                          Filters
+                          {(filingsHasAgedDebt || filingsHasRestricted || filingsHas3a10 || filingsMinScore || filingsDateFrom || filingsDateTo) && (
+                            <span className="bg-cyan-400 text-[#07080B] text-[8px] font-black px-1 rounded-full">!</span>
+                          )}
+                        </button>
+
+                        <button
+                          onClick={handleFilingsSearch}
+                          className="px-4 py-2 text-xs font-bold rounded-lg bg-cyan-400 text-[#07080B] hover:bg-cyan-300 transition-all"
+                        >
+                          Search
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Expanded filters */}
+                    {showFilingsFilters && (
+                      <div className="mt-4 pt-4 border-t border-[#1B2030]/50 grid grid-cols-2 md:grid-cols-4 gap-4">
+                        <div className="space-y-1">
+                          <label className="text-[9px] text-zinc-500 uppercase tracking-widest font-bold">Signal Filters</label>
+                          <div className="space-y-2">
+                            <label className="flex items-center gap-2 text-xs cursor-pointer text-[#8892A6]">
+                              <input
+                                type="checkbox"
+                                checked={filingsHasAgedDebt}
+                                onChange={(e) => { setFilingsHasAgedDebt(e.target.checked); setFilingsPage(1); }}
+                                className="rounded bg-[#07080B] border-[#1B2030] text-cyan-400"
+                              />
+                              Aged Debt
+                            </label>
+                            <label className="flex items-center gap-2 text-xs cursor-pointer text-[#8892A6]">
+                              <input
+                                type="checkbox"
+                                checked={filingsHasRestricted}
+                                onChange={(e) => { setFilingsHasRestricted(e.target.checked); setFilingsPage(1); }}
+                                className="rounded bg-[#07080B] border-[#1B2030] text-cyan-400"
+                              />
+                              Restricted Stock
+                            </label>
+                            <label className="flex items-center gap-2 text-xs cursor-pointer text-[#8892A6]">
+                              <input
+                                type="checkbox"
+                                checked={filingsHas3a10}
+                                onChange={(e) => { setFilingsHas3a10(e.target.checked); setFilingsPage(1); }}
+                                className="rounded bg-[#07080B] border-[#1B2030] text-cyan-400"
+                              />
+                              3(a)(10)
+                            </label>
+                          </div>
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-[9px] text-zinc-500 uppercase tracking-widest font-bold">Min Score</label>
+                          <input
+                            type="number"
+                            min="0"
+                            max="100"
+                            placeholder="0"
+                            value={filingsMinScore}
+                            onChange={(e) => { setFilingsMinScore(e.target.value); setFilingsPage(1); }}
+                            className="w-full bg-[#07080B] border border-[#1B2030] rounded-lg p-2 text-xs text-[#E8ECF4] outline-none"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-[9px] text-zinc-500 uppercase tracking-widest font-bold">Date From</label>
+                          <input
+                            type="date"
+                            value={filingsDateFrom}
+                            onChange={(e) => { setFilingsDateFrom(e.target.value); setFilingsPage(1); }}
+                            className="w-full bg-[#07080B] border border-[#1B2030] rounded-lg p-2 text-xs text-[#E8ECF4] outline-none"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-[9px] text-zinc-500 uppercase tracking-widest font-bold">Date To</label>
+                          <input
+                            type="date"
+                            value={filingsDateTo}
+                            onChange={(e) => { setFilingsDateTo(e.target.value); setFilingsPage(1); }}
+                            className="w-full bg-[#07080B] border border-[#1B2030] rounded-lg p-2 text-xs text-[#E8ECF4] outline-none"
+                          />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Results summary */}
+                  <div className="px-4 py-2 bg-[#0A0C10]/20 border-b border-[#1B2030]/30 flex items-center justify-between">
+                    <span className="text-[10px] text-zinc-500">
+                      {filingsLoading ? "Loading..." : `${filingsTotal.toLocaleString()} filings found`}
+                    </span>
+                    <span className="text-[10px] text-zinc-600">
+                      Page {filingsPage} of {filingsTotalPages || 1}
+                    </span>
+                  </div>
+
+                  {/* Table */}
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="border-b border-[#1B2030] bg-[#0A0C10]/40">
+                          {["Filed Date", "Form", "Issuer", "Market Tier", "Insider", "Score", "Signals", ""].map((h) => (
+                            <th key={h} className="px-4 py-3 text-left text-zinc-500 font-bold tracking-wider uppercase text-[10px]">
+                              {h}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filingsLoading ? (
+                          <tr>
+                            <td colSpan={8} className="px-4 py-16 text-center">
+                              <RefreshCw className="h-5 w-5 animate-spin text-cyan-400 mx-auto mb-2" />
+                              <span className="text-zinc-500 text-[10px]">Loading filings...</span>
+                            </td>
+                          </tr>
+                        ) : filingsData.length === 0 ? (
+                          <tr>
+                            <td colSpan={8} className="px-4 py-16 text-center text-zinc-600">
+                              No filings found matching your filters.
+                            </td>
+                          </tr>
+                        ) : (
+                          filingsData.map((f) => (
+                            <tr
+                              key={f.id}
+                              onClick={() => openFilingDetail(f)}
+                              className="border-b border-[#1B2030]/60 hover:bg-[#1B2030]/20 transition-colors cursor-pointer"
+                            >
+                              <td className="px-4 py-3 text-zinc-400 whitespace-nowrap">
+                                {formatShortDate(f.filedAt)}
+                              </td>
+                              <td className="px-4 py-3">
+                                <span className="px-2 py-0.5 rounded text-[9px] font-bold bg-violet-950/40 text-violet-400 border border-violet-800/30">
+                                  {f.formType}
+                                </span>
+                              </td>
+                              <td className="px-4 py-3">
+                                <div className="font-bold text-[#E8ECF4]">{f.issuerName || "—"}</div>
+                                {f.issuerTicker && (
+                                  <span className="text-[10px] text-cyan-400/70">{f.issuerTicker}</span>
+                                )}
+                              </td>
+                              <td className="px-4 py-3 text-zinc-500 text-[10px]">
+                                {f.marketTier ? f.marketTier.replace(/_/g, " ") : "—"}
+                              </td>
+                              <td className="px-4 py-3 text-zinc-400">
+                                {f.insiderName || "—"}
+                              </td>
+                              <td className="px-4 py-3">
+                                <span className={`px-2 py-0.5 rounded text-[9px] font-black tabular-nums ${getScoreColor(f.score)}`}>
+                                  {f.score}
+                                </span>
+                              </td>
+                              <td className="px-4 py-3">
+                                <div className="flex flex-wrap gap-1">
+                                  {f.hasAgedDebt && (
+                                    <span className="px-1.5 py-0.5 rounded text-[8px] font-bold bg-rose-950/40 text-rose-400 border border-rose-800/30">
+                                      AGED DEBT
+                                    </span>
+                                  )}
+                                  {f.hasRestricted && (
+                                    <span className="px-1.5 py-0.5 rounded text-[8px] font-bold bg-amber-950/40 text-amber-400 border border-amber-800/30">
+                                      RESTRICTED
+                                    </span>
+                                  )}
+                                  {f.has3a10 && (
+                                    <span className="px-1.5 py-0.5 rounded text-[8px] font-bold bg-cyan-950/40 text-cyan-400 border border-cyan-800/30">
+                                      3(a)(10)
+                                    </span>
+                                  )}
+                                </div>
+                              </td>
+                              <td className="px-4 py-3">
+                                <Eye className="h-3.5 w-3.5 text-zinc-600 hover:text-cyan-400 transition-colors" />
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {/* Pagination */}
+                  {filingsTotalPages > 1 && (
+                    <div className="px-4 py-3 border-t border-[#1B2030] bg-[#0A0C10]/30 flex items-center justify-between">
+                      <button
+                        onClick={() => { const p = Math.max(1, filingsPage - 1); setFilingsPage(p); loadFilings(p); }}
+                        disabled={filingsPage <= 1}
+                        className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border border-[#1B2030] bg-[#07080B] text-[#8892A6] hover:text-[#E8ECF4] transition-all disabled:opacity-30"
+                      >
+                        <ChevronLeft className="h-3 w-3" />
+                        Prev
+                      </button>
+                      <div className="flex items-center gap-1">
+                        {Array.from({ length: Math.min(7, filingsTotalPages) }, (_, idx) => {
+                          let pageNum: number;
+                          if (filingsTotalPages <= 7) {
+                            pageNum = idx + 1;
+                          } else if (filingsPage <= 4) {
+                            pageNum = idx + 1;
+                          } else if (filingsPage >= filingsTotalPages - 3) {
+                            pageNum = filingsTotalPages - 6 + idx;
+                          } else {
+                            pageNum = filingsPage - 3 + idx;
+                          }
+                          return (
+                            <button
+                              key={pageNum}
+                              onClick={() => { setFilingsPage(pageNum); loadFilings(pageNum); }}
+                              className={`w-7 h-7 rounded text-[10px] font-bold transition-all ${
+                                filingsPage === pageNum
+                                  ? "bg-cyan-400/15 text-cyan-400 border border-cyan-400/40"
+                                  : "text-zinc-500 hover:text-[#E8ECF4]"
+                              }`}
+                            >
+                              {pageNum}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <button
+                        onClick={() => { const p = Math.min(filingsTotalPages, filingsPage + 1); setFilingsPage(p); loadFilings(p); }}
+                        disabled={filingsPage >= filingsTotalPages}
+                        className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border border-[#1B2030] bg-[#07080B] text-[#8892A6] hover:text-[#E8ECF4] transition-all disabled:opacity-30"
+                      >
+                        Next
+                        <ChevronRight className="h-3 w-3" />
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
             {/* Contacts list view */}
             {activeTab === "contacts" && (
               <div className="bg-[#0F1218]/40 border border-[#1B2030]/80 rounded-xl overflow-hidden">
@@ -563,6 +1053,17 @@ export default function DashboardClient() {
                   </div>
                   
                   <div className="flex items-center gap-3 flex-wrap">
+                    <button
+                      onClick={() => setHumanOnlyFilter(!humanOnlyFilter)}
+                      className={`px-3 py-2 text-xs font-semibold rounded-lg border transition-all ${
+                        humanOnlyFilter
+                          ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-400"
+                          : "border-[#1B2030] bg-[#07080B] text-[#8892A6] hover:text-[#E8ECF4]"
+                      }`}
+                    >
+                      {humanOnlyFilter ? "Humans Only" : "All Contacts"}
+                    </button>
+
                     <select
                       value={statusFilter}
                       onChange={(e) => setStatusFilter(e.target.value)}
@@ -785,8 +1286,30 @@ export default function DashboardClient() {
 
             {/* Drawer Scrollable Content */}
             <div className="flex-1 overflow-y-auto p-6 space-y-6">
-              {/* Security Position & Deal details */}
+              {/* Contact Information & Security Details */}
               <div className="grid grid-cols-2 gap-4 bg-[#0F1218]/40 border border-[#1B2030]/60 rounded-xl p-4">
+                <div className="col-span-2 border-b border-[#1B2030]/40 pb-3 mb-1">
+                  <span className="text-[9px] text-zinc-500 uppercase tracking-widest block mb-1">Contact Info</span>
+                  <div className="space-y-1.5">
+                    <div className="flex items-center gap-2 text-xs text-[#E8ECF4]">
+                      <Mail className="h-3.5 w-3.5 text-zinc-500" />
+                      {selectedContact.email || "No email"}
+                    </div>
+                    <div className="flex items-center gap-2 text-xs text-[#E8ECF4]">
+                      <Phone className="h-3.5 w-3.5 text-zinc-500" />
+                      {selectedContact.phone && selectedContact.phone !== "unknown" ? selectedContact.phone : "No phone number"}
+                    </div>
+                    {selectedContact.filing_url && (
+                      <div className="flex items-center gap-2 text-xs text-cyan-400 mt-2">
+                        <FileText className="h-3.5 w-3.5" />
+                        <a href={selectedContact.filing_url} target="_blank" rel="noreferrer" className="hover:underline">
+                          View Original SEC Filing
+                        </a>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
                 <div>
                   <span className="text-[9px] text-zinc-500 uppercase tracking-widest block">Deal Value</span>
                   <span className="text-base font-black text-cyan-400">{formatUSD(selectedContact.deal_value || 0)}</span>
@@ -917,6 +1440,301 @@ export default function DashboardClient() {
                   )}
                 </div>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Filing Detail Drawer */}
+      {selectedFilingRow && (
+        <div className="fixed inset-0 z-50 flex justify-end">
+          <div
+            onClick={() => { setSelectedFilingRow(null); setSelectedFiling(null); }}
+            className="absolute inset-0 bg-[#07080B]/60 backdrop-blur-sm"
+          />
+          <div className="relative w-full max-w-2xl h-full bg-[#0A0C10] border-l border-[#1B2030] shadow-2xl flex flex-col overflow-hidden">
+            {/* Drawer Header */}
+            <div className="p-6 border-b border-[#1B2030] flex items-center justify-between">
+              <div>
+                <div className="flex items-center gap-2 mb-2">
+                  <span className="px-2 py-0.5 rounded text-[9px] font-bold bg-violet-950/40 text-violet-400 border border-violet-800/30">
+                    {selectedFilingRow.formType}
+                  </span>
+                  <span className={`px-2 py-0.5 rounded text-[9px] font-black tabular-nums ${getScoreColor(selectedFilingRow.score)}`}>
+                    Score: {selectedFilingRow.score}
+                  </span>
+                </div>
+                <h2 className="text-base font-bold text-[#E8ECF4]">
+                  {selectedFilingRow.issuerName || "Unknown Issuer"}
+                  {selectedFilingRow.issuerTicker && (
+                    <span className="text-cyan-400 ml-2 text-sm">({selectedFilingRow.issuerTicker})</span>
+                  )}
+                </h2>
+                <p className="text-[10px] text-zinc-500 mt-1">
+                  Filed {formatShortDate(selectedFilingRow.filedAt)} · {selectedFilingRow.accessionNumber}
+                </p>
+              </div>
+              <button
+                onClick={() => { setSelectedFilingRow(null); setSelectedFiling(null); }}
+                className="text-zinc-500 hover:text-zinc-300 text-xs font-bold bg-[#0F1218] border border-[#1B2030] px-3 py-1 rounded"
+              >
+                Close
+              </button>
+            </div>
+
+            {/* Drawer Content */}
+            <div className="flex-1 overflow-y-auto p-6 space-y-6">
+              {filingDetailLoading ? (
+                <div className="flex flex-col items-center justify-center py-16">
+                  <RefreshCw className="h-6 w-6 animate-spin text-cyan-400 mb-3" />
+                  <span className="text-[10px] text-zinc-500">Loading filing details...</span>
+                </div>
+              ) : selectedFiling ? (
+                <>
+                  {/* Signal Badges */}
+                  <div className="flex flex-wrap gap-2">
+                    {selectedFilingRow.hasAgedDebt && (
+                      <span className="px-2 py-1 rounded text-[10px] font-bold bg-rose-950/40 text-rose-400 border border-rose-800/30">
+                        🔴 Aged Debt
+                      </span>
+                    )}
+                    {selectedFilingRow.hasRestricted && (
+                      <span className="px-2 py-1 rounded text-[10px] font-bold bg-amber-950/40 text-amber-400 border border-amber-800/30">
+                        🟡 Restricted Stock
+                      </span>
+                    )}
+                    {selectedFilingRow.has3a10 && (
+                      <span className="px-2 py-1 rounded text-[10px] font-bold bg-cyan-950/40 text-cyan-400 border border-cyan-800/30">
+                        🔵 3(a)(10) Exemption
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Issuer Details */}
+                  <div className="bg-[#0F1218]/40 border border-[#1B2030]/60 rounded-xl p-4">
+                    <span className="text-[9px] text-zinc-500 uppercase tracking-widest block mb-3 font-bold">Issuer Details</span>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <span className="text-[9px] text-zinc-600 block">Company</span>
+                        <span className="text-xs font-bold text-[#E8ECF4]">{String(selectedFiling.filing.issuerName || "—")}</span>
+                      </div>
+                      <div>
+                        <span className="text-[9px] text-zinc-600 block">Ticker</span>
+                        <span className="text-xs font-bold text-cyan-400">{String(selectedFiling.filing.issuerTicker || "—")}</span>
+                      </div>
+                      <div>
+                        <span className="text-[9px] text-zinc-600 block">Market Tier</span>
+                        <span className="text-xs text-zinc-300">{String(selectedFiling.filing.marketTier || "—").replace(/_/g, " ")}</span>
+                      </div>
+                      <div>
+                        <span className="text-[9px] text-zinc-600 block">CIK</span>
+                        <span className="text-xs text-zinc-400 font-mono">{String(selectedFiling.filing.issuerCik || "—")}</span>
+                      </div>
+                      {Boolean(selectedFiling.filing.issuerPhone) && (
+                        <div>
+                          <span className="text-[9px] text-zinc-600 block">Phone</span>
+                          <span className="text-xs text-zinc-300">{String(selectedFiling.filing.issuerPhone)}</span>
+                        </div>
+                      )}
+                      {Boolean(selectedFiling.filing.issuerWebsite) && (
+                        <div>
+                          <span className="text-[9px] text-zinc-600 block">Website</span>
+                          <a href={String(selectedFiling.filing.issuerWebsite)} target="_blank" rel="noreferrer" className="text-xs text-cyan-400 hover:underline">
+                            {String(selectedFiling.filing.issuerWebsite)}
+                          </a>
+                        </div>
+                      )}
+                      {Boolean(selectedFiling.filing.irContactName) && (
+                        <div>
+                          <span className="text-[9px] text-zinc-600 block">IR Contact</span>
+                          <span className="text-xs text-zinc-300">{String(selectedFiling.filing.irContactName)}</span>
+                        </div>
+                      )}
+                      {Boolean(selectedFiling.filing.irEmail) && (
+                        <div>
+                          <span className="text-[9px] text-zinc-600 block">IR Email</span>
+                          <span className="text-xs text-zinc-300">{String(selectedFiling.filing.irEmail)}</span>
+                        </div>
+                      )}
+                      {Boolean(selectedFiling.filing.avgDailyVolume) && (
+                        <div>
+                          <span className="text-[9px] text-zinc-600 block">Avg Daily Volume</span>
+                          <span className="text-xs text-zinc-300">{Number(selectedFiling.filing.avgDailyVolume).toLocaleString()}</span>
+                        </div>
+                      )}
+                      {Boolean(selectedFiling.filing.marketCapUsd) && (
+                        <div>
+                          <span className="text-[9px] text-zinc-600 block">Market Cap</span>
+                          <span className="text-xs text-zinc-300">{formatUSD(Number(selectedFiling.filing.marketCapUsd))}</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Insider Details */}
+                  <div className="bg-[#0F1218]/40 border border-[#1B2030]/60 rounded-xl p-4">
+                    <span className="text-[9px] text-zinc-500 uppercase tracking-widest block mb-3 font-bold">Insider Details</span>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <span className="text-[9px] text-zinc-600 block">Name</span>
+                        <span className="text-xs font-bold text-[#E8ECF4]">{String(selectedFiling.filing.insiderName || "—")}</span>
+                      </div>
+                      <div>
+                        <span className="text-[9px] text-zinc-600 block">CIK</span>
+                        <span className="text-xs text-zinc-400 font-mono">{String(selectedFiling.filing.insiderCik || "—")}</span>
+                      </div>
+                      {Boolean(selectedFiling.filing.insiderPhone) && (
+                        <div className="flex items-center gap-2">
+                          <Phone className="h-3 w-3 text-zinc-500" />
+                          <span className="text-xs text-zinc-300">{String(selectedFiling.filing.insiderPhone)}</span>
+                        </div>
+                      )}
+                      {Boolean(selectedFiling.filing.insiderEmail) && (
+                        <div className="flex items-center gap-2">
+                          <Mail className="h-3 w-3 text-zinc-500" />
+                          <span className="text-xs text-zinc-300">{String(selectedFiling.filing.insiderEmail)}</span>
+                        </div>
+                      )}
+                      {Boolean(selectedFiling.filing.insiderAddress) && (
+                        <div className="col-span-2">
+                          <span className="text-[9px] text-zinc-600 block">Address</span>
+                          <span className="text-xs text-zinc-400">
+                            {String(selectedFiling.filing.insiderAddress)}
+                            {selectedFiling.filing.insiderCity ? `, ${String(selectedFiling.filing.insiderCity)}` : ""}
+                            {selectedFiling.filing.insiderState ? `, ${String(selectedFiling.filing.insiderState)}` : ""}
+                            {selectedFiling.filing.insiderZip ? ` ${String(selectedFiling.filing.insiderZip)}` : ""}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Role badges */}
+                    {selectedFiling.insiderRoles.length > 0 && (
+                      <div className="mt-3 pt-3 border-t border-[#1B2030]/40">
+                        <span className="text-[9px] text-zinc-600 block mb-2">Roles</span>
+                        <div className="flex flex-wrap gap-1.5">
+                          {selectedFiling.insiderRoles.map((role, idx) => (
+                            <div key={idx} className="flex gap-1">
+                              {role.isDirector && (
+                                <span className="px-1.5 py-0.5 rounded text-[8px] font-bold bg-violet-950/40 text-violet-400 border border-violet-800/30">
+                                  DIRECTOR
+                                </span>
+                              )}
+                              {role.isOfficer && (
+                                <span className="px-1.5 py-0.5 rounded text-[8px] font-bold bg-sky-950/40 text-sky-400 border border-sky-800/30">
+                                  OFFICER{role.officerTitle ? ` — ${role.officerTitle}` : ""}
+                                </span>
+                              )}
+                              {role.isTenPctOwn && (
+                                <span className="px-1.5 py-0.5 rounded text-[8px] font-bold bg-amber-950/40 text-amber-400 border border-amber-800/30">
+                                  10%+ OWNER
+                                </span>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Transactions */}
+                  {selectedFiling.transactions.length > 0 && (
+                    <div className="bg-[#0F1218]/40 border border-[#1B2030]/60 rounded-xl overflow-hidden">
+                      <div className="px-4 py-3 border-b border-[#1B2030]">
+                        <span className="text-[9px] text-zinc-500 uppercase tracking-widest font-bold">
+                          Transactions ({selectedFiling.transactions.length})
+                        </span>
+                      </div>
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-[10px]">
+                          <thead>
+                            <tr className="border-b border-[#1B2030] bg-[#0A0C10]/40">
+                              {["Date", "Type", "Security", "Code", "Shares", "Price", "A/D", "Owned After"].map((h) => (
+                                <th key={h} className="px-3 py-2 text-left text-zinc-600 font-bold uppercase tracking-wider">
+                                  {h}
+                                </th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {selectedFiling.transactions.map((tx) => (
+                              <tr key={tx.id} className="border-b border-[#1B2030]/40">
+                                <td className="px-3 py-2 text-zinc-400 whitespace-nowrap">
+                                  {formatShortDate(tx.transactionDate)}
+                                </td>
+                                <td className="px-3 py-2">
+                                  <span className={`px-1 py-0.5 rounded text-[8px] font-bold ${
+                                    tx.tableType === "NON_DERIVATIVE"
+                                      ? "bg-emerald-950/30 text-emerald-400 border border-emerald-800/30"
+                                      : "bg-violet-950/30 text-violet-400 border border-violet-800/30"
+                                  }`}>
+                                    {tx.tableType === "NON_DERIVATIVE" ? "NON-DERIV" : "DERIV"}
+                                  </span>
+                                </td>
+                                <td className="px-3 py-2 text-zinc-300 max-w-[200px] truncate">
+                                  {tx.securityTitle || "—"}
+                                </td>
+                                <td className="px-3 py-2 text-zinc-400 font-mono">
+                                  {tx.transactionCode || "—"}
+                                </td>
+                                <td className="px-3 py-2 text-zinc-300 tabular-nums">
+                                  {tx.shares != null ? Number(tx.shares).toLocaleString() : "—"}
+                                </td>
+                                <td className="px-3 py-2 text-zinc-300 tabular-nums">
+                                  {tx.pricePerShare != null ? `$${Number(tx.pricePerShare).toFixed(2)}` : "—"}
+                                </td>
+                                <td className="px-3 py-2">
+                                  <span className={`font-bold ${
+                                    tx.acquiredDisposed === "A" ? "text-emerald-400" : tx.acquiredDisposed === "D" ? "text-rose-400" : "text-zinc-500"
+                                  }`}>
+                                    {tx.acquiredDisposed || "—"}
+                                  </span>
+                                </td>
+                                <td className="px-3 py-2 text-zinc-300 tabular-nums">
+                                  {tx.sharesOwnedAfter != null ? Number(tx.sharesOwnedAfter).toLocaleString() : "—"}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* SEC Filing Links */}
+                  <div className="flex flex-col gap-2">
+                    {selectedFilingRow.primaryDocUrl && (
+                      <a
+                        href={selectedFilingRow.primaryDocUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="flex items-center gap-2 px-4 py-2.5 rounded-lg border border-[#1B2030] bg-[#0F1218]/40 hover:border-cyan-400/40 transition-all text-xs text-cyan-400"
+                      >
+                        <FileText className="h-3.5 w-3.5" />
+                        View Primary Document on SEC.gov
+                        <ExternalLink className="h-3 w-3 ml-auto" />
+                      </a>
+                    )}
+                    {selectedFilingRow.rawXmlUrl && (
+                      <a
+                        href={selectedFilingRow.rawXmlUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="flex items-center gap-2 px-4 py-2.5 rounded-lg border border-[#1B2030] bg-[#0F1218]/40 hover:border-[#2A3050] transition-all text-xs text-zinc-400"
+                      >
+                        <FileText className="h-3.5 w-3.5" />
+                        View Raw XML Filing
+                        <ExternalLink className="h-3 w-3 ml-auto" />
+                      </a>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <div className="text-center text-zinc-600 py-16">
+                  <AlertCircle className="h-6 w-6 mx-auto mb-2" />
+                  <span className="text-[10px]">Could not load filing details.</span>
+                </div>
+              )}
             </div>
           </div>
         </div>

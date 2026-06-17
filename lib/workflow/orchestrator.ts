@@ -172,7 +172,11 @@ export async function runDailyWorkflow(opts: {
           issuerName: m.filing.issuerName,
           filingDate,
         });
-        if (!dup) {
+        const supp = await isSuppressed({
+          email: generated.to,
+          issuerName: m.filing.issuerName,
+        });
+        if (!dup && !supp) {
           unsentMatches.push(m);
         }
       }
@@ -192,9 +196,17 @@ export async function runDailyWorkflow(opts: {
   }
 
   matchedTargets = matches.length;
+  const sentKeys = new Set<string>();
 
   for (const match of matches) {
     const generated = generateEmail(match);
+
+    const key = `${generated.to.toLowerCase()}::${match.filing.issuerName.toLowerCase()}`;
+    if (sentKeys.has(key)) {
+      console.log(`[workflow] ⏭ Skipping in-memory duplicate in same run: ${generated.to} / ${match.filing.issuerName}`);
+      suppressedDupes++;
+      continue;
+    }
 
     const filingDate = new Date(match.filing.filedAt).toISOString().split("T")[0];
 
@@ -204,11 +216,17 @@ export async function runDailyWorkflow(opts: {
       issuerName: match.filing.issuerName,
       filingDate,
     });
-    if (dup) {
+    const supp = await isSuppressed({
+      email: generated.to,
+      issuerName: match.filing.issuerName,
+    });
+    if (dup || supp) {
       console.log(`[workflow] ⏭ Skipping duplicate: ${generated.to} / ${match.filing.issuerName}`);
       suppressedDupes++;
       continue;
     }
+
+    sentKeys.add(key);
 
 
 
