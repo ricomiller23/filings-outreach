@@ -29,7 +29,9 @@ export async function checkReplies(): Promise<ReplyStatus[]> {
      FROM outreach_crm
      WHERE reply_status = 'awaiting'
        AND gmail_thread_id IS NOT NULL
-       AND sent_at > NOW() - INTERVAL '90 days'`
+       AND sent_at > NOW() - INTERVAL '14 days'
+     ORDER BY sent_at DESC
+     LIMIT 25`
   );
 
   if (!openThreads.length) {
@@ -106,8 +108,14 @@ export async function checkReplies(): Promise<ReplyStatus[]> {
       });
 
       console.log(`[reply-tracker] Reply from ${thread.email}: ${classification}`);
-    } catch (err) {
-      console.error(`[reply-tracker] Error checking thread ${thread.gmail_thread_id}:`, err);
+    } catch (err: any) {
+      if (err?.code === 404 || err?.status === 404 || err?.message?.includes("404")) {
+        await query(
+          `UPDATE outreach_crm SET reply_status = 'not_found' WHERE outreach_id = $1`,
+          [thread.outreach_id]
+        ).catch(() => {});
+      }
+      console.error(`[reply-tracker] Error checking thread ${thread.gmail_thread_id}:`, err?.message || err);
     }
   }
 

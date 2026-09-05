@@ -55,6 +55,7 @@ To fix this:
     "https://www.googleapis.com/auth/gmail.readonly",
     "https://www.googleapis.com/auth/gmail.modify",
     "https://www.googleapis.com/auth/gmail.settings.basic",
+    "https://www.googleapis.com/auth/gmail.settings.sharing",
   ];
 
   const authUrl = oauth2Client.generateAuthUrl({
@@ -116,16 +117,37 @@ Then re-run this script.
   }
 
   console.log(`\n✅ Authorization successful!\n${"─".repeat(50)}`);
-  console.log("\n📋 Add these to your .env.local AND Vercel environment variables:\n");
   console.log(`GOOGLE_REFRESH_TOKEN=${tokens.refresh_token}`);
-  console.log(`\nAccess token (expires, do NOT store): ${tokens.access_token?.slice(0, 40)}...`);
+
+  // Automatically update all env files
+  const fs = await import("fs");
+  const path = await import("path");
+  const updateEnvFile = (filePath: string) => {
+    const fullPath = path.resolve(filePath);
+    if (!fs.existsSync(fullPath)) return;
+    let content = fs.readFileSync(fullPath, "utf-8");
+    const regex = /^GOOGLE_REFRESH_TOKEN=.*$/m;
+    if (regex.test(content)) {
+      content = content.replace(regex, `GOOGLE_REFRESH_TOKEN="${tokens.refresh_token}"`);
+    } else {
+      content += `\nGOOGLE_REFRESH_TOKEN="${tokens.refresh_token}"`;
+    }
+    fs.writeFileSync(fullPath, content, "utf-8");
+    console.log(`✅ Auto-updated ${filePath}`);
+  };
+
+  updateEnvFile(".env.local");
+  updateEnvFile(".env.production");
+  updateEnvFile("/Users/ericmiller/Projects/edgar-insider-scout/.env.local");
+  updateEnvFile("/Users/ericmiller/Projects/edgar-insider-scout/.env.production");
+  updateEnvFile("/Users/ericmiller/Projects/edgar-insider-scout/.env");
 
   // Check send-as alias
   oauth2Client.setCredentials(tokens);
   const gmail = google.gmail({ version: "v1", auth: oauth2Client });
   const sendAs = await gmail.users.settings.sendAs.list({ userId: "me" });
   const aliases = sendAs.data.sendAs ?? [];
-  const targetAlias = process.env.SEND_AS_EMAIL ?? "ricomiller@icloud.com";
+  const targetAlias = process.env.SEND_AS_EMAIL ?? "ricomiller@gmail.com";
   const found = aliases.find((a) => a.sendAsEmail?.toLowerCase() === targetAlias.toLowerCase());
   const foundAny = found as Record<string, unknown> | undefined;
 

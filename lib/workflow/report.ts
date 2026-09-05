@@ -3,7 +3,7 @@
 import { sendEmail } from "../gmail/sender";
 import { query } from "../db";
 
-const OWNER_EMAIL = process.env.OWNER_EMAIL ?? "ricomiller@icloud.com";
+const OWNER_EMAIL = process.env.OWNER_EMAIL ?? "ricomiller@gmail.com";
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL ?? "https://filings-outreach.vercel.app";
 
 export interface RunSummary {
@@ -68,18 +68,27 @@ LINKS
 
 ${"─".repeat(50)}
 Eric Miller
-ricomiller@icloud.com
+ricomiller@gmail.com
 `;
 
-  try {
-    await sendEmail({
-      to: OWNER_EMAIL,
-      subject,
-      body,
-    });
-    console.log("[report] Daily summary sent to", OWNER_EMAIL);
-  } catch (err) {
-    console.error("[report] Failed to send daily report:", err);
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const res = await sendEmail({
+        to: OWNER_EMAIL,
+        subject,
+        body,
+      });
+      if (res.success) {
+        console.log("[report] Daily summary sent to", OWNER_EMAIL);
+        break;
+      } else {
+        console.warn(`[report] Attempt ${attempt} failed: ${res.error}. Retrying in 5s...`);
+        if (attempt < 3) await new Promise((r) => setTimeout(r, 5000));
+      }
+    } catch (err) {
+      console.error(`[report] Attempt ${attempt} exception:`, err);
+      if (attempt < 3) await new Promise((r) => setTimeout(r, 5000));
+    }
   }
 }
 
